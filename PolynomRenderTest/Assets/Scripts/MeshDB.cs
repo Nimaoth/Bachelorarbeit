@@ -1,20 +1,30 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using MathNet.Numerics.LinearAlgebra.Single;
 using UnityEngine;
 using UnityEngine.UI;
 
 public struct Vertex {
-    public const int SIZE_IN_BYTES = sizeof(float) * 3 * 2;
+    public const int SIZE_IN_BYTES = sizeof(float) * (3 + 3 + 1);
     public Vector3 position;
     public Vector3 normal;
+    public float weight;
 
-    public Vertex(Vector3 pos, Vector3 normal)
+    public Vertex(Vector3 pos, Vector3 normal, float weight = -1.0f)
     {
         this.position = pos;
         this.normal = normal;
+        this.weight = weight;
+    }
+
+    public Vertex withWeight(float w) {
+        return new Vertex(position, normal) {
+            weight = w
+        };
     }
 }
 
@@ -31,21 +41,12 @@ public class MeshDB : MonoBehaviour
 {
     [SerializeField]
     private new Camera camera;
+
     [SerializeField]
     private Material pointCloudMaterial;
 
     [SerializeField]
     private Material meshMaterial;
-
-    [SerializeField]
-    private Mesh[] objects;
-
-    private PointCloud[] pointClouds;
-
-
-    // point cloud visualization
-    private PointCloud currentPointCloud;
-    private ComputeBuffer pointCloudBuffer;
 
     [SerializeField]
     private GameObject meshSelectorButtonList;
@@ -61,12 +62,17 @@ public class MeshDB : MonoBehaviour
     // points per area
     [SerializeField]
     private InputField ifPointsPerArea;
-    private int pointsPerArea = 20;
+    private int pointsPerArea = 100;
 
     // show point cloud
     [SerializeField]
     private Toggle cbShowPointCloud;
     private bool showPointCloud = true;
+
+    // show mesh
+    [SerializeField]
+    private Toggle cbShowMesh;
+    private bool showMesh = true;
 
     // 
 
@@ -76,6 +82,49 @@ public class MeshDB : MonoBehaviour
     [SerializeField]
     private PolySurface surface;
     private MeshCollider meshCollider;
+
+    [SerializeField]
+    [Min(0)]
+    private float largeCoefficientPenalty = 0.0001f;
+
+    [SerializeField]
+    [Min(0)]
+    private int maxVertexCount;
+
+    [SerializeField]
+    private int randomVertexSeed = 0;
+
+    [SerializeField]
+    [Min(0)]
+    private int randomVertexCount;
+
+    [SerializeField]
+    [Range(0, 1)]
+    private float randomVertexWeight;
+
+    [SerializeField]
+    [Range(1.0f, 100.0f)]
+    private float weightScale = 1.0f;
+
+    [SerializeField]
+    [Range(0, 1)]
+    private float weightFactor = 1.0f;
+
+    [SerializeField]
+    private Mesh[] objects;
+
+
+    // private stuff
+    private Thread thread;
+    private Vertex[] currentVertices;
+    private Vertex[] currentClosestPoints;
+    private Vector3 currentCenter;
+    private float[] coefficients;
+
+    // point cloud visualization
+    private PointCloud[] pointClouds;
+    private PointCloud currentPointCloud;
+    private ComputeBuffer pointCloudBuffer;
 
     void Start()
     {
@@ -100,6 +149,10 @@ public class MeshDB : MonoBehaviour
             showPointCloud = val;
         });
 
+        cbShowMesh.onValueChanged.AddListener(val => {
+            showMesh = val;
+        });
+
         ifMinimumPointCount.onEndEdit.AddListener(val => {
             if (int.TryParse(val, out var min))
                 minimumPointCount = min;
@@ -118,9 +171,61 @@ public class MeshDB : MonoBehaviour
             RecomputeCurrentPointCloud();
         });
 
-        pointCloudBuffer = new ComputeBuffer(10000000, Vertex.SIZE_IN_BYTES);
+        pointCloudBuffer = new ComputeBuffer(100000000, Vertex.SIZE_IN_BYTES);
         pointCloudMaterial.SetBuffer("pointCloud", pointCloudBuffer);
+
+        ComputePoints(pointClouds[0]);
+        SetActivePointCloud(pointClouds[0]);
+
+        thread = new Thread(RecalculateCoefficientsThread);
+        thread.Start();
     }
+
+    private void OnRenderObject() {
+        if (currentPointCloud == null)
+            return;
+
+        if (showMesh) {
+            Graphics.DrawMesh(currentPointCloud.mesh, Matrix4x4.identity, meshMaterial, 0);
+        }
+
+        if (showPointCloud) {
+            pointCloudMaterial.SetBuffer("pointCloud", pointCloudBuffer);
+            pointCloudMaterial.SetPass(0);
+            Graphics.DrawProceduralNow(MeshTopology.Points, 1, currentPointCloud.vertices.Length);
+        }
+    }
+
+    private void Update() {
+        pointCloudMaterial.SetFloat("_WeightScale", weightScale);
+        pointCloudMaterial.SetFloat("_WeightFactor", weightFactor);
+
+        if (currentPointCloud != null) {
+            var ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            if (ctrl && Input.GetMouseButtonDown(1)) {
+                var ray = camera.ScreenPointToRay(Input.mousePosition);
+                if (Physics.Raycast(ray, out var hit)) {
+                    camera.transform.parent.position = hit.point;
+                } else {
+                    camera.transform.parent.position = Vector3.zero;
+                }
+            }
+            if (!ctrl && Input.GetMouseButton(1)) {
+                var ray = camera.ScreenPointToRay(Input.mousePosition);
+                meshCollider.sharedMesh = currentPointCloud.mesh;
+                if (meshCollider.Raycast(ray, out var hit, float.MaxValue)) {
+                    hitLocation.position = hit.point;
+                    currentCenter = hit.point;
+                    currentVertices = currentPointCloud.vertices;
+                    pointCloudMaterial.SetVector("center", hit.point);
+                }
+            }
+        }
+    }
+
+
+
+    #region Point Cloud
 
     private void RecomputeCurrentPointCloud() {
         if (currentPointCloud == null)
@@ -184,14 +289,14 @@ public class MeshDB : MonoBehaviour
             float area = AreaOfTriangle(v1, v2, v3);
             double pointsInTriangle = (double)area / (double)totalSurfaceArea * pointCount;
 
-            if (Random.value < (pointsInTriangle - (int)pointsInTriangle)) {
+            if (UnityEngine.Random.value < (pointsInTriangle - (int)pointsInTriangle)) {
                 pointsInTriangle += 1;
             }
             // Debug.Log($"Tri {i / 3}: area = {area} ({area/totalSurfaceArea*100}% of total), generating {(int)pointsInTriangle} points");
 
             for (int k = 0; k < (int)pointsInTriangle; k++) {
-                float r1 = Mathf.Sqrt(Random.Range(0.0f, 1.0f));
-                float r2 = Random.Range(0.0f, 1.0f);
+                float r1 = Mathf.Sqrt(UnityEngine.Random.Range(0.0f, 1.0f));
+                float r2 = UnityEngine.Random.Range(0.0f, 1.0f);
                 float a = 1 - r1;
                 float b = r1 * (1 - r2);
                 float c = r1 * r2;
@@ -207,43 +312,220 @@ public class MeshDB : MonoBehaviour
         pointCloud.vertices = vertices.ToArray();
     }
 
-    private void OnRenderObject() {
-        if (currentPointCloud == null)
-            return;
-
-        if (showPointCloud) {
-            pointCloudMaterial.SetBuffer("pointCloud", pointCloudBuffer);
-            pointCloudMaterial.SetPass(0);
-            Graphics.DrawProceduralNow(MeshTopology.Points, 1, currentPointCloud.vertices.Length);
-        } else {
-            Graphics.DrawMesh(currentPointCloud.mesh, Matrix4x4.identity, meshMaterial, 0);
-        }
-    }
-
     private void SetActivePointCloud(PointCloud pc) {
+
         currentPointCloud = pc;
-        pointCloudBuffer.SetData(currentPointCloud.vertices);
+
+        if (currentPointCloud.vertices.Length <= pointCloudBuffer.count)
+            pointCloudBuffer.SetData(currentPointCloud.vertices);
+        else
+            Debug.LogError("Too many points in point cloud: {currentPointCloud.vertices.Length}/{pointCloudBuffer.count}");
     }
 
-    private void Update() {
-        if (currentPointCloud == null)
-            return;
+    #endregion
 
-        if (Input.GetMouseButtonDown(1)) {
-            var ray = camera.ScreenPointToRay(Input.mousePosition);
-            if (Physics.Raycast(ray, out var hit)) {
-                camera.transform.parent.position = hit.point;
-            } else {
-                camera.transform.parent.position = Vector3.zero;
+    #region Poly Surface
+
+    private void RecalculateCoefficientsThread() {
+        int targetFPS = 120;
+        int msPerFrame = 1000 / targetFPS;
+
+        var watch = new System.Diagnostics.Stopwatch();
+        var random = new System.Random();
+
+        while (true) {
+            watch.Restart();
+            if (currentVertices?.Length > 0) {
+                random = new System.Random(randomVertexSeed);
+
+                var center = currentCenter;
+                float maxDist = -2 * (Mathf.Log(0.01f)) / weightScale;
+                maxDist = maxDist * maxDist;
+                Vertex[] vertices = currentVertices;
+                vertices = vertices
+                    .Where(v => (v.position - center).sqrMagnitude <= maxDist)
+                    .OrderBy(v => (v.position - center).sqrMagnitude)
+                    .Take(Mathf.Min(vertices.Length, maxVertexCount))
+                    .Concat(Enumerable.Repeat(0, randomVertexCount).Select(_ => vertices[random.Next() % vertices.Length].withWeight(randomVertexWeight)))
+                    .Select(v => new Vertex(v.position - center, v.normal, v.weight))
+                    .ToArray();
+                currentClosestPoints = vertices;
+
+
+                var X = DenseMatrix.OfRows(vertices.Length, 20, vertices.Select(v => Pc(v)));
+                var tmp = 2 * X.Transpose() * X + Sum(20, 20, vertices, v => weight(v) * Y(v.position)) + 2 * largeCoefficientPenalty;
+                var c = tmp.Inverse() * Sum(20, 1, vertices, v => weight(v) * Z(v.position, v.normal));
+
+                coefficients = c.Column(0).ToArray();
+                coefficients[0] = 0;
+                surface.SetCenter(center);
+                surface.SetCoefficients(coefficients);
             }
-        }
-        if (Input.GetMouseButtonDown(0)) {
-            var ray = camera.ScreenPointToRay(Input.mousePosition);
-            meshCollider.sharedMesh = currentPointCloud.mesh;
-            if (meshCollider.Raycast(ray, out var hit, float.MaxValue)) {
-                hitLocation.position = hit.point;
-                surface.RecalculateCoefficients(hit.point, currentPointCloud);
-            }
+            var time = watch.Elapsed;
+            if (time.Milliseconds < msPerFrame)
+                Thread.Sleep(msPerFrame - time.Milliseconds);
         }
     }
+
+    private DenseMatrix Sum(int r, int c, Vertex[] vertices, Func<Vertex, DenseMatrix> func) {
+        DenseMatrix result = new DenseMatrix(r, c);
+        for (int i = 0; i < vertices.Length; i++) {
+            result += func(vertices[i]);
+        }
+        return result;
+    }
+
+    private float weight(Vertex v) {
+        float weight = v.weight;
+        if (weight < 0)
+            weight = Mathf.Exp(-0.5f * v.position.sqrMagnitude * weightScale);
+        return Mathf.Lerp(1, weight, weightFactor);
+    }
+
+    private float[] Pc(Vertex v) {
+        float w = Mathf.Sqrt(weight(v));
+        Vector3 p = v.position;
+        return new float[] {
+            w * 1,
+            w * p.x,
+            w * p.y,
+            w * p.z,
+            w * p.x * p.x,
+            w * p.x * p.y,
+            w * p.x * p.z,
+            w * p.y * p.y,
+            w * p.y * p.z,
+            w * p.z * p.z,
+            w * p.x * p.x * p.x,
+            w * p.x * p.x * p.y,
+            w * p.x * p.x * p.z,
+            w * p.x * p.y * p.y,
+            w * p.x * p.y * p.z,
+            w * p.x * p.z * p.z,
+            w * p.y * p.y * p.y,
+            w * p.y * p.y * p.z,
+            w * p.y * p.z * p.z,
+            w * p.z * p.z * p.z,
+        };
+    }
+
+    private DenseMatrix Z(Vector3 p, Vector3 n) {
+        float x = p.x;
+        float y = p.y;
+        float z = p.z;
+        float u = n.x;
+        float v = n.y;
+        float w = n.z;
+        float ux = u*x;
+        float uy = u*y;
+        float uz = u*z;
+        float vx = v*x;
+        float vy = v*y;
+        float vz = v*z;
+        float wx = w*x;
+        float wy = w*y;
+        float wz = w*z;
+        float uxx = u*x*x;
+        float uxy = u*x*y;
+        float uxz = u*x*z;
+        float uyy = u*y*y;
+        float uyz = u*y*z;
+        float uzz = u*z*z;
+        float vxx = v*x*x;
+        float vxy = v*x*y;
+        float vxz = v*x*z;
+        float vyy = v*y*y;
+        float vyz = v*y*z;
+        float vzz = v*z*z;
+        float wxx = w*x*x;
+        float wxy = w*x*y;
+        float wxz = w*x*z;
+        float wyy = w*y*y;
+        float wyz = w*y*z;
+        float wzz = w*z*z;
+        return DenseMatrix.OfArray(new float[,] {
+            { 0 },
+            { 2 * u },
+            { 2 * v },
+            { 2 * w },
+            { 4 * ux },
+            { 2 * uy + 2 * vx },
+            { 2 * uz + 2 * wx },
+            { 4 * vy },
+            { 2 * vz + 2 * wy },
+            { 4 * wz },
+            { 6 * uxx },
+            { 2 * vxx + 4 * uxy },
+            { 2 * wxx + 4 * uxz },
+            { 2 * uyy + 4 * vxy },
+            { 2 * uyz + 2 * vxz + 2 * wxy },
+            { 2 * uzz + 4 * wxz },
+            { 6 * vyy },
+            { 2 * wyy + 4 * vyz },
+            { 2 * vzz + 4 * wyz },
+            { 6 * wzz },
+        });
+    }
+
+    private DenseMatrix Y(Vector3 p)
+    {
+        float x = p.x;
+        float y = p.y;
+        float z = p.z;
+        float xx = x * x;
+        float xy = x * y;
+        float xz = x * z;
+        float yy = y * y;
+        float yz = y * z;
+        float zz = z * z;
+        float xxx = x * x * x;
+        float xxy = x * x * y;
+        float xxz = x * x * z;
+        float xyy = x * y * y;
+        float xyz = x * y * z;
+        float xzz = x * z * z;
+        float yyy = y * y * y;
+        float yyz = y * y * z;
+        float yzz = y * z * z;
+        float zzz = z * z * z;
+        float xxxx = x * x * x * x;
+        float xxxy = x * x * x * y;
+        float xxxz = x * x * x * z;
+        float xxyy = x * x * y * y;
+        float xxyz = x * x * y * z;
+        float xxzz = x * x * z * z;
+        float xyyy = x * y * y * y;
+        float xyyz = x * y * y * z;
+        float xyzz = x * y * z * z;
+        float xzzz = x * z * z * z;
+        float yyyy = y * y * y * y;
+        float yyyz = y * y * y * z;
+        float yyzz = y * y * z * z;
+        float yzzz = y * z * z * z;
+        float zzzz = z * z * z * z;
+        return DenseMatrix.OfArray(new float[,]{
+            { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, 
+            { 0, 2, 0, 0, 4 * x, 2 * y, 2 * z, 0, 0, 0, 6 * xx, 4 * xy, 4 * xz, 2 * yy, 2 * yz, 2 * zz, 0, 0, 0, 0 }, 
+            { 0, 0, 2, 0, 0, 2 * x, 0, 4 * y, 2 * z, 0, 0, 2 * xx, 0, 4 * xy, 2 * xz, 0, 6 * yy, 4 * yz, 2 * zz, 0 }, 
+            { 0, 0, 0, 2, 0, 0, 2 * x, 0, 2 * y, 4 * z, 0, 0, 2 * xx, 0, 2 * xy, 4 * xz, 0, 2 * yy, 4 * yz, 6 * zz }, 
+            { 0, 4 * x, 0, 0, 8 * xx, 4 * xy, 4 * xz, 0, 0, 0, 12 * xxx, 8 * xxy, 8 * xxz, 4 * xyy, 4 * xyz, 4 * xzz, 0, 0, 0, 0 }, 
+            { 0, 2 * y, 2 * x, 0, 4 * xy, 2 * yy + 2 * xx, 2 * yz, 4 * xy, 2 * xz, 0, 6 * xxy, 4 * xyy + 2 * xxx, 4 * xyz, 2 * yyy + 4 * xxy, 2 * yyz + 2 * xxz, 2 * yzz, 6 * xyy, 4 * xyz, 2 * xzz, 0 }, 
+            { 0, 2 * z, 0, 2 * x, 4 * xz, 2 * yz, 2 * zz + 2 * xx, 0, 2 * xy, 4 * xz, 6 * xxz, 4 * xyz, 4 * xzz + 2 * xxx, 2 * yyz, 2 * yzz + 2 * xxy, 2 * zzz + 4 * xxz, 0, 2 * xyy, 4 * xyz, 6 * xzz }, 
+            { 0, 0, 4 * y, 0, 0, 4 * xy, 0, 8 * yy, 4 * yz, 0, 0, 4 * xxy, 0, 8 * xyy, 4 * xyz, 0, 12 * yyy, 8 * yyz, 4 * yzz, 0 }, 
+            { 0, 0, 2 * z, 2 * y, 0, 2 * xz, 2 * xy, 4 * yz, 2 * zz + 2 * yy, 4 * yz, 0, 2 * xxz, 2 * xxy, 4 * xyz, 2 * xzz + 2 * xyy, 4 * xyz, 6 * yyz, 4 * yzz + 2 * yyy, 2 * zzz + 4 * yyz, 6 * yzz }, 
+            { 0, 0, 0, 4 * z, 0, 0, 4 * xz, 0, 4 * yz, 8 * zz, 0, 0, 4 * xxz, 0, 4 * xyz, 8 * xzz, 0, 4 * yyz, 8 * yzz, 12 * zzz }, 
+            { 0, 6 * xx, 0, 0, 12 * xxx, 6 * xxy, 6 * xxz, 0, 0, 0, 18 * xxxx, 12 * xxxy, 12 * xxxz, 6 * xxyy, 6 * xxyz, 6 * xxzz, 0, 0, 0, 0 }, 
+            { 0, 4 * xy, 2 * xx, 0, 8 * xxy, 4 * xyy + 2 * xxx, 4 * xyz, 4 * xxy, 2 * xxz, 0, 12 * xxxy, 8 * xxyy + 2 * xxxx, 8 * xxyz, 4 * xyyy + 4 * xxxy, 4 * xyyz + 2 * xxxz, 4 * xyzz, 6 * xxyy, 4 * xxyz, 2 * xxzz, 0 }, 
+            { 0, 4 * xz, 0, 2 * xx, 8 * xxz, 4 * xyz, 4 * xzz + 2 * xxx, 0, 2 * xxy, 4 * xxz, 12 * xxxz, 8 * xxyz, 8 * xxzz + 2 * xxxx, 4 * xyyz, 4 * xyzz + 2 * xxxy, 4 * xzzz + 4 * xxxz, 0, 2 * xxyy, 4 * xxyz, 6 * xxzz }, 
+            { 0, 2 * yy, 4 * xy, 0, 4 * xyy, 2 * yyy + 4 * xxy, 2 * yyz, 8 * xyy, 4 * xyz, 0, 6 * xxyy, 4 * xyyy + 4 * xxxy, 4 * xyyz, 2 * yyyy + 8 * xxyy, 2 * yyyz + 4 * xxyz, 2 * yyzz, 12 * xyyy, 8 * xyyz, 4 * xyzz, 0 }, 
+            { 0, 2 * yz, 2 * xz, 2 * xy, 4 * xyz, 2 * yyz + 2 * xxz, 2 * yzz + 2 * xxy, 4 * xyz, 2 * xzz + 2 * xyy, 4 * xyz, 6 * xxyz, 4 * xyyz + 2 * xxxz, 4 * xyzz + 2 * xxxy, 2 * yyyz + 4 * xxyz, 2 * yyzz + 2 * xxzz + 2 * xxyy, 2 * yzzz + 4 * xxyz, 6 * xyyz, 4 * xyzz + 2 * xyyy, 2 * xzzz + 4 * xyyz, 6 * xyzz }, 
+            { 0, 2 * zz, 0, 4 * xz, 4 * xzz, 2 * yzz, 2 * zzz + 4 * xxz, 0, 4 * xyz, 8 * xzz, 6 * xxzz, 4 * xyzz, 4 * xzzz + 4 * xxxz, 2 * yyzz, 2 * yzzz + 4 * xxyz, 2 * zzzz + 8 * xxzz, 0, 4 * xyyz, 8 * xyzz, 12 * xzzz }, 
+            { 0, 0, 6 * yy, 0, 0, 6 * xyy, 0, 12 * yyy, 6 * yyz, 0, 0, 6 * xxyy, 0, 12 * xyyy, 6 * xyyz, 0, 18 * yyyy, 12 * yyyz, 6 * yyzz, 0 }, 
+            { 0, 0, 4 * yz, 2 * yy, 0, 4 * xyz, 2 * xyy, 8 * yyz, 4 * yzz + 2 * yyy, 4 * yyz, 0, 4 * xxyz, 2 * xxyy, 8 * xyyz, 4 * xyzz + 2 * xyyy, 4 * xyyz, 12 * yyyz, 8 * yyzz + 2 * yyyy, 4 * yzzz + 4 * yyyz, 6 * yyzz }, 
+            { 0, 0, 2 * zz, 4 * yz, 0, 2 * xzz, 4 * xyz, 4 * yzz, 2 * zzz + 4 * yyz, 8 * yzz, 0, 2 * xxzz, 4 * xxyz, 4 * xyzz, 2 * xzzz + 4 * xyyz, 8 * xyzz, 6 * yyzz, 4 * yzzz + 4 * yyyz, 2 * zzzz + 8 * yyzz, 12 * yzzz }, 
+            { 0, 0, 0, 6 * zz, 0, 0, 6 * xzz, 0, 6 * yzz, 12 * zzz, 0, 0, 6 * xxzz, 0, 6 * xyzz, 12 * xzzz, 0, 6 * yyzz, 12 * yzzz, 18 * zzzz },
+        });
+    }
+
+    #endregion
 }

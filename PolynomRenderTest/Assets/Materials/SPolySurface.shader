@@ -2,7 +2,10 @@
 {
     Properties
     {
-        _MainTex ("Texture", 2D) = "white" {}
+        _StepSize ("Step Size", Range(0.01, 0.5)) = 0.1
+        _Color ("Color", Color) = (1, 1, 1)
+        _BackfaceColor ("Backface Color", Color) = (0.8, 0.2, 0.2)
+        _Bounds ("Bounds", Range(1, 100)) = 50
     }
     SubShader
     {
@@ -23,10 +26,10 @@
             #include "UnityCG.cginc"
             #include "UnityLightingCommon.cginc"
 
-            #define MAX_DIST 200
+            #define MAX_DIST 500
             #define MAX_STEPS 500
             #define STEP_SIZE 0.1
-            #define SURF_DIST 0.01
+            #define SURF_DIST 0.0001
 
             struct appdata
             {
@@ -44,10 +47,9 @@
                 half depth : SV_Depth;
             };
 
-            sampler2D _MainTex;
-            float4 _MainTex_ST;
-
-            float4 color;
+            float _StepSize;
+            float4 _Color;
+            float4 _BackfaceColor;
             float3 cameraPos;
             float3 cameraDir;
             float3 cameraRight;
@@ -62,7 +64,7 @@
             float3 cameraDirTR;
 
             float cameraFOV;
-            float boxSize;
+            float _Bounds;
             float3 center;
             float coefficients[20];
 
@@ -108,7 +110,7 @@
             }
 
             float GetDist(float3 p) {
-                float box = sdBox(p - center, float3(1, 1, 1) * boxSize);
+                float box = sdBox(p - center, float3(1, 1, 1) * _Bounds);
                 float poly = sdPoly(p - center);
                 return max(box, poly);
             }
@@ -144,77 +146,64 @@
                     2*h*y + 2*n*x*y + 2*r*y*z + 3*q*y*y + c + f*x + i*z + l*x*x + o*x*z + s*z*z,
                     2*j*z + 2*p*x*z + 2*s*y*z + 3*t*z*z + d + g*x + i*y + m*x*x + o*x*y + r*y*y
                 ));
-
-                // general purpose
-                // float d = GetDist(pos);
-                // float2 e = float2(.001, 0);
-                
-                // float3 n = d - float3(
-                //     GetDist(pos-e.xyy),
-                //     GetDist(pos-e.yxy),
-                //     GetDist(pos-e.yyx));
-                
-                // return normalize(n);
             }
 
-            float RayMarch(float3 ro, float3 rd) {
-                float stepSize = STEP_SIZE;
+            float BinarySearch(float3 ro, float3 rd, float t_min, float t_max) {
+                float d_min = GetDist(ro + rd * t_min);
+                float d_max = GetDist(ro + rd * t_max);
 
-                float t=0.;
-                
+                for(int i=0; abs(d_min) >= SURF_DIST && i < MAX_STEPS / 8; i++) {
+                    float t = (t_min + t_max) * 0.5;
+                    float d = GetDist(ro + rd * t);
+
+                    if (sign(d) == sign(d_min)) {
+                        t_min = t;
+                    } else {
+                        t_max = t;
+                    }
+                }
+
+                return t_max;
+            }
+
+            float2 RayMarch(float3 ro, float3 rd) {
+                float stepSize = _StepSize;
+
+                float2 t_prev = float2(0, -1);
+                float2 t = float2(stepSize, -1);
+
                 float prev_dist = GetDist(ro);
-                float prev_t = 0.0;
-                t += stepSize;
-
                 float dist;
 
                 for(int i=0; true; i++) {
                     if (i >= MAX_STEPS) {
-                        return MAX_DIST + 1.0;
+                        return float2(MAX_DIST + 1.0, t.y);
                     }
-                    float3 p = ro + rd * t;
+                    float3 p = ro + rd * t.x;
                     dist = GetDist(p);
 
-                    if (prev_dist * dist <= 0.0) {
+                    if (prev_dist < 0 && dist >= 0) {
+                        t_prev.y = t.x - stepSize;
+                        t.y = t.x;
+                        t.y = BinarySearch(ro, rd, t_prev.y, t.y);
+                    }
+
+                    if (prev_dist > 0 && dist <= 0)
                         break;
-                    }
 
                     prev_dist = dist;
-                    prev_t = t;
-                    // t += dist * 0.5;
-                    t += stepSize;
-                    // t += clamp(dist, stepSize, stepSize * 1);
-                    stepSize = lerp(STEP_SIZE, STEP_SIZE * 10, t / MAX_DIST);
+                    t_prev.x = t.x;
+                    t.x += stepSize;
+                    stepSize = lerp(_StepSize, _StepSize * 10, t.x / MAX_DIST);
+                    // t.x += dist * 0.5;
+                    // t.x += clamp(dist, stepSize, stepSize * 1);
 
-
-                    if(t > MAX_DIST)
+                    if (t.x > MAX_DIST)
                         return t;
                 }
 
-                if (prev_dist > 0) {
-                    float tmp = prev_dist;
-                    prev_dist = dist;
-                    dist = tmp;
-                    tmp = prev_t;
-                    prev_t = t;
-                    t = tmp;
-                }
+                t.x = BinarySearch(ro, rd, t_prev.x, t.x);
 
-                for(int i=0; abs(dist) >= SURF_DIST; i++) {
-                    if (i >= MAX_STEPS * 2) {
-                        return t;
-                    }
-
-                    float tt = (t + prev_t) * 0.5;
-                    float3 p = ro + rd * tt;
-                    dist = GetDist(p);
-
-                    if (dist < 0) {
-                        prev_t = tt;
-                    } else {
-                        t = tt;
-                    }
-                }
                 return t;
             }
 
@@ -230,7 +219,7 @@
                 return lerp(pos1, pos2, uv.y);
             }
 
-            float3 GetColor(float3 pos) {
+            float3 GetColor(float3 pos, float3 color) {
                 float3 normal = GetNormal(pos);
 
                 float3 lightDir = _WorldSpaceLightPos0.xyz;
@@ -240,28 +229,38 @@
                 // return (normal * 0.5 + 0.5) * color.rgb * light;
                 // return normal * color.rgb * light;
 
-                float f = max(0.1, dot(normal, -cameraDir));
-                return  (normal * 0.5 + 0.5) * f;
+                float f = max(0.1, abs(dot(normal, -cameraDir)));
+                return color.rgb * f;
             }
 
             FragmentOutput frag(v2f i)
             {
+                // discard;
                 FragmentOutput output;
             
                 float2 uv = i.vertex.xy / _ScreenParams.xy;
                 float3 rayOrigin = GetRayOrigin(uv);
                 float3 rayDir = GetRayDir(uv);
 
-                float dist = RayMarch(rayOrigin, rayDir);
-
-                if (dist >= MAX_DIST) {
+                float2 dist = RayMarch(rayOrigin, rayDir);
+                if (dist.x >= MAX_DIST && dist.y <= 0) {
                     discard;
+                } else if (dist.x < MAX_DIST && dist.y > 0) {
+                    float3 col1 = GetColor(cameraPos + rayDir * dist.x, _Color.rgb);
+                    float3 col2 = GetColor(cameraPos + rayDir * dist.y, _BackfaceColor.rgb);
+                    float3 col = (1 - _BackfaceColor.a) * col1 + _BackfaceColor.a * col2;
+                    output.color = float4(col, _Color.a);
+                    output.depth = (1.0 / dist.y - _ZBufferParams.w) / _ZBufferParams.z;
+                } else if (dist.x < MAX_DIST) {
+                    float3 col = GetColor(cameraPos + rayDir * dist.x, _Color.rgb);
+                    output.color = float4(col, _Color.a);
+                    output.depth = (1.0 / dist.x - _ZBufferParams.w) / _ZBufferParams.z;
+                } else if (dist.y > 0) {
+                    float3 col = GetColor(cameraPos + rayDir * dist.y, _BackfaceColor.rgb) * _BackfaceColor.a;
+                    output.color = float4(col, _Color.a);
+                    output.depth = (1.0 / dist.y - _ZBufferParams.w) / _ZBufferParams.z;
                 } else {
-                    float3 pos = cameraPos + rayDir * dist;
-                    float3 col = GetColor(pos);
-
-                    output.color = float4(col, color.a);
-                    output.depth = (1.0 / dist - _ZBufferParams.w) / _ZBufferParams.z;
+                    discard;
                 }
 
                 return output;
