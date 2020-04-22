@@ -28,11 +28,7 @@ public class CameraController : MonoBehaviour
     private float yaw = 0;
 
     [SerializeField]
-    private Transform hitLocation;
-
-    [SerializeField]
-    private PolySurface surface;
-
+    private float panSpeed = 1;
 
     void Start()
     {
@@ -41,6 +37,7 @@ public class CameraController : MonoBehaviour
 
     void Update()
     {
+        var ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
         var mouseScroll = Input.mouseScrollDelta;
         var mousePos = new Vector2(Input.mousePosition.x, Input.mousePosition.y);
         var mouseMove = mousePos - lastMousePos;
@@ -51,7 +48,14 @@ public class CameraController : MonoBehaviour
         if (Input.GetMouseButtonDown(1) || Input.GetMouseButtonDown(2))
             mouseMove *= 0;
 
-        if (Input.GetMouseButton(2)) {
+        if (ctrl && Input.GetMouseButton(2)) {
+            Vector3 move = Vector3.zero;
+            move -= camera.transform.up * mouseMove.y * panSpeed * distance * 0.005f;
+            move -= camera.transform.right * mouseMove.x * panSpeed * distance * 0.005f;
+            transform.position += move;
+        }
+
+        if (!ctrl && Input.GetMouseButton(2)) {
             yaw += mouseMove.x * mouseSensitivity;
             pitch = Mathf.Clamp(pitch - mouseMove.y * mouseSensitivity, -89, 89);
         }

@@ -37,6 +37,14 @@ public class PointCloud {
     }
 }
 
+public struct PathPoint {
+    public Vector3 position;
+    public Vector3? uv;
+    public Vector3? right;
+    public Vector3? up;
+    public Vector3 direction;
+}
+
 public class MeshDB : MonoBehaviour
 {
     [SerializeField]
@@ -128,8 +136,13 @@ public class MeshDB : MonoBehaviour
 
     // path
     [SerializeField]
-    private LineRenderer pathRenderer;
-
+    public float PathMinDist = 0.01f;
+    public float PathMaxDist = 0.1f;
+    public float PathAxisLen = 0.1f;
+    public float Temp = 100;
+    public bool RenderPathAxis = false;
+    public bool RenderPath = true;
+    private List<PathPoint> currentPath = new List<PathPoint>();
 
     // methods
 
@@ -239,6 +252,32 @@ public class MeshDB : MonoBehaviour
             var point = camera.ScreenPointToRay(Input.mousePosition);
             SimulatePath(point.origin, point.direction);
         }
+
+        for (int i = 0; i < currentPath.Count; i++) {
+            var p = currentPath[i];
+
+            if (RenderPathAxis) {
+                if (p.uv != null) {
+                    var vec = p.right.Value * p.uv.Value.x + p.up.Value * p.uv.Value.y;
+                    Debug.DrawRay(p.position, vec * PathAxisLen, Color.yellow, 0, false);
+                }
+                if (p.right != null)
+                    Debug.DrawRay(p.position, p.right.Value * PathAxisLen, Color.red, 0, false);
+                if (p.up != null)
+                    Debug.DrawRay(p.position, p.up.Value * PathAxisLen, Color.green, 0, false);
+                Debug.DrawRay(p.position, p.direction, Color.blue, 0, false);
+            }
+
+            if (RenderPath && i < currentPath.Count - 1) {
+                var col = Color.white;
+                if (i == 0) {
+                    col = Color.cyan;
+                } else if (i == currentPath.Count - 2) {
+                    col = Color.magenta;
+                }
+                Debug.DrawLine(p.position, currentPath[i + 1].position, col, 0, false);
+            }
+        }
     }
 
     private float InvIntPhaseFunction(float x, float g) {
@@ -258,15 +297,24 @@ public class MeshDB : MonoBehaviour
     }
 
     private void SimulatePath(Vector3 origin, Vector3 direction) {
-        var points = new List<Vector3>();
-        points.Add(origin);
+        currentPath.Clear();
+
+        direction = direction.normalized;
+
+        currentPath.Add(new PathPoint{
+            position = origin,
+            direction = direction
+        });
 
         float maxDist = float.MaxValue;
 
         for (int i = 0; i < 1500; i++) {
             var (dist, inside) = surface.RayMarch(origin, direction, maxDist);
             var newPoint = origin + direction * dist;
-            points.Add(newPoint);
+            var point = new PathPoint{
+                position = newPoint,
+                direction = direction
+            };
 
             var normal = surface.GetNormalAt(newPoint);
             origin = newPoint - normal * surface.SURF_DIST * 2;
@@ -274,16 +322,22 @@ public class MeshDB : MonoBehaviour
             if (!inside) {
                 // @todo: refract
                 var (_dist, _) = surface.RayMarch(origin, direction, 10.0f);
-                points.Add(origin + direction * _dist);
+                currentPath.Add(point);
+                currentPath.Add(new PathPoint{
+                    position = origin + direction * 10,
+                });
                 break;
             }
 
+            var g = surface.g;
+            // g = Mathf.Clamp(Mathf.Lerp(-1, 1, surface.EvaluateAt(origin) / Temp + 1), -1, 1);
+
             // still inside, set random direction and maxDist
-            if (surface.g == 0) {
+            if (g == 0) {
                 direction = UnityEngine.Random.onUnitSphere;
             } else {
                 float rand = UnityEngine.Random.Range(0.0f, 1.0f);
-                float cosAngle = InvIntPhaseFunction(rand, surface.g);
+                float cosAngle = InvIntPhaseFunction(rand, g);
                 float theta = Mathf.Acos(cosAngle);
                 float d = 1 / Mathf.Tan(theta);
 
@@ -295,12 +349,16 @@ public class MeshDB : MonoBehaviour
                     direction = -direction;
                 } else {
                     var right = GetPerpendicular(direction).normalized;
-                    var up = Vector3.Cross(right, direction);
-                    var uv = UnityEngine.Random.insideUnitCircle.normalized;
+                    var up = Vector3.Cross(right, direction).normalized;
+                    var uv = UnityEngine.Random.insideUnitCircle;
+
+                    point.uv = uv;
+                    point.right = right;
+                    point.up = up;
 
                     // Debug.Log($"right: {right}, up: {up}, uv: {uv}");
 
-                    direction = uv.x * right + uv.y * up + d * direction * Mathf.Sign(cosAngle);
+                    direction = uv.x * right + uv.y * up + d * direction;
                     direction = direction.normalized;
                 }
             }
@@ -308,12 +366,10 @@ public class MeshDB : MonoBehaviour
             // Debug.Log($"direction: {direction}");
 
             // direction = UnityEngine.Random.onUnitSphere;
-            maxDist = UnityEngine.Random.Range(0.001f, 0.01f);
-            maxDist = 0.05f;
+            maxDist = UnityEngine.Random.Range(PathMinDist, PathMaxDist);
+            point.direction = point.direction * Vector3.Dot(point.direction, direction * maxDist);
+            currentPath.Add(point);
         }
-
-        pathRenderer.positionCount = points.Count;
-        pathRenderer.SetPositions(points.ToArray());
     }
 
     #region Point Cloud
