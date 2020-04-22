@@ -126,8 +126,14 @@ public class MeshDB : MonoBehaviour
     private PointCloud currentPointCloud;
     private ComputeBuffer pointCloudBuffer;
 
-    void Start()
-    {
+    // path
+    [SerializeField]
+    private LineRenderer pathRenderer;
+
+
+    // methods
+
+    void Start() {
         meshCollider = GetComponent<MeshCollider>();
         pointClouds = new PointCloud[objects.Length];
 
@@ -171,7 +177,7 @@ public class MeshDB : MonoBehaviour
             RecomputeCurrentPointCloud();
         });
 
-        pointCloudBuffer = new ComputeBuffer(100000000, Vertex.SIZE_IN_BYTES);
+        pointCloudBuffer = new ComputeBuffer(10000000, Vertex.SIZE_IN_BYTES);
         pointCloudMaterial.SetBuffer("pointCloud", pointCloudBuffer);
 
         ComputePoints(pointClouds[0]);
@@ -181,12 +187,18 @@ public class MeshDB : MonoBehaviour
         thread.Start();
     }
 
+    void OnApplicationQuit() {
+        pointCloudBuffer.Release();
+    }
+
     private void OnRenderObject() {
         if (currentPointCloud == null)
             return;
 
         if (showMesh) {
-            Graphics.DrawMesh(currentPointCloud.mesh, Matrix4x4.identity, meshMaterial, 0);
+            meshMaterial.SetPass(0);
+            Graphics.DrawMeshNow(currentPointCloud.mesh, Matrix4x4.identity);
+            // Graphics.DrawMesh(currentPointCloud.mesh, Matrix4x4.identity, meshMaterial, 0);
         }
 
         if (showPointCloud) {
@@ -197,11 +209,12 @@ public class MeshDB : MonoBehaviour
     }
 
     private void Update() {
+        var ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            
         pointCloudMaterial.SetFloat("_WeightScale", weightScale);
         pointCloudMaterial.SetFloat("_WeightFactor", weightFactor);
 
         if (currentPointCloud != null) {
-            var ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
             if (ctrl && Input.GetMouseButtonDown(1)) {
                 var ray = camera.ScreenPointToRay(Input.mousePosition);
                 if (Physics.Raycast(ray, out var hit)) {
@@ -221,9 +234,87 @@ public class MeshDB : MonoBehaviour
                 }
             }
         }
+
+        if (ctrl && Input.GetMouseButtonDown(0)) {
+            var point = camera.ScreenPointToRay(Input.mousePosition);
+            SimulatePath(point.origin, point.direction);
+        }
     }
 
+    private float InvIntPhaseFunction(float x, float g) {
+        float g2 = g * g;
 
+        float tmp = (1 - g2) / (1 + g * (2 * x - 1));
+        return (1 / (2 * g)) * (1 + g2 - tmp * tmp);
+    }
+
+    private Vector3 GetPerpendicular(Vector3 p) {
+        var t = new Vector3(p.z, p.z, -p.x - p.y);
+        if (t.sqrMagnitude < 0.01f) {
+            return new Vector3(-p.y - p.z, p.x, p.x);
+        } else {
+            return t;
+        }
+    }
+
+    private void SimulatePath(Vector3 origin, Vector3 direction) {
+        var points = new List<Vector3>();
+        points.Add(origin);
+
+        float maxDist = float.MaxValue;
+
+        for (int i = 0; i < 1500; i++) {
+            var (dist, inside) = surface.RayMarch(origin, direction, maxDist);
+            var newPoint = origin + direction * dist;
+            points.Add(newPoint);
+
+            var normal = surface.GetNormalAt(newPoint);
+            origin = newPoint - normal * surface.SURF_DIST * 2;
+
+            if (!inside) {
+                // @todo: refract
+                var (_dist, _) = surface.RayMarch(origin, direction, 10.0f);
+                points.Add(origin + direction * _dist);
+                break;
+            }
+
+            // still inside, set random direction and maxDist
+            if (surface.g == 0) {
+                direction = UnityEngine.Random.onUnitSphere;
+            } else {
+                float rand = UnityEngine.Random.Range(0.0f, 1.0f);
+                float cosAngle = InvIntPhaseFunction(rand, surface.g);
+                float theta = Mathf.Acos(cosAngle);
+                float d = 1 / Mathf.Tan(theta);
+
+                // Debug.Log($"rand: {rand}, cosAngle: {cosAngle}, theta: {theta}, d: {d}");
+
+                if (d == float.PositiveInfinity) {
+
+                } else if (d == float.NegativeInfinity) {
+                    direction = -direction;
+                } else {
+                    var right = GetPerpendicular(direction).normalized;
+                    var up = Vector3.Cross(right, direction);
+                    var uv = UnityEngine.Random.insideUnitCircle.normalized;
+
+                    // Debug.Log($"right: {right}, up: {up}, uv: {uv}");
+
+                    direction = uv.x * right + uv.y * up + d * direction * Mathf.Sign(cosAngle);
+                    direction = direction.normalized;
+                }
+            }
+
+            // Debug.Log($"direction: {direction}");
+
+            // direction = UnityEngine.Random.onUnitSphere;
+            maxDist = UnityEngine.Random.Range(0.001f, 0.01f);
+            maxDist = 0.05f;
+        }
+
+        pathRenderer.positionCount = points.Count;
+        pathRenderer.SetPositions(points.ToArray());
+    }
 
     #region Point Cloud
 
@@ -467,8 +558,7 @@ public class MeshDB : MonoBehaviour
         });
     }
 
-    private DenseMatrix Y(Vector3 p)
-    {
+    private DenseMatrix Y(Vector3 p) {
         float x = p.x;
         float y = p.y;
         float z = p.z;
