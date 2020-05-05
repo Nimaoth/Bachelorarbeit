@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -70,7 +70,7 @@ public class MeshDB : MonoBehaviour
     // points per area
     [SerializeField]
     private InputField ifPointsPerArea;
-    private int pointsPerArea = 100;
+    private float pointsPerAreaMultiplier = 1;
 
     // show point cloud
     [SerializeField]
@@ -183,7 +183,7 @@ public class MeshDB : MonoBehaviour
 
         ifPointsPerArea.onEndEdit.AddListener(val => {
             if (int.TryParse(val, out var min))
-                pointsPerArea = min;
+                pointsPerAreaMultiplier = min;
             else
                 ifPointsPerArea.text = "0";
             ClearAllPointClouds();
@@ -394,8 +394,6 @@ public class MeshDB : MonoBehaviour
     }
 
     private void ComputePoints(PointCloud pointCloud) {
-        Debug.Log($"minimumPointCount: {minimumPointCount}");
-        Debug.Log($"pointsPerArea: {pointsPerArea}");
         Mesh mesh = pointCloud.mesh;
         Vector3[] positions = mesh.vertices;
         Vector3[] normals = mesh.normals;
@@ -417,10 +415,11 @@ public class MeshDB : MonoBehaviour
             totalSurfaceArea += AreaOfTriangle(v1, v2, v3);
         }
 
+        var pointsPerArea = (int)(2 * Mathf.Pow(surface.StandardDeviation, -2) * pointsPerAreaMultiplier);
         int pointCount = Mathf.Max(minimumPointCount, (int)totalSurfaceArea * pointsPerArea);
-        // pointCount = Mathf.Max(pointCount, triangles.Length);
+        pointCount = Mathf.Min(pointCount, 100_000);
 
-        // Debug.Log($"Mesh {mesh.name}: area = {totalSurfaceArea}, generating {pointCount} points");
+        Debug.Log($"Mesh {mesh.name}: area = {totalSurfaceArea}, pointsPerArea: {pointsPerArea}, generating {pointCount} points");
 
         for (int i = 0; i < triangles.Length; i += 3) {
             int i1 = triangles[i];
@@ -485,6 +484,8 @@ public class MeshDB : MonoBehaviour
             if (currentVertices?.Length > 0) {
                 random = new System.Random(randomVertexSeed);
 
+                float sigmaNInv = 1.0f / surface.StandardDeviation;
+
                 var center = currentCenter;
                 float maxDist = -2 * (Mathf.Log(0.01f)) / weightScale;
                 maxDist = maxDist * maxDist;
@@ -494,7 +495,7 @@ public class MeshDB : MonoBehaviour
                     .OrderBy(v => (v.position - center).sqrMagnitude)
                     .Take(Mathf.Min(vertices.Length, maxVertexCount))
                     .Concat(Enumerable.Repeat(0, randomVertexCount).Select(_ => vertices[random.Next() % vertices.Length].withWeight(randomVertexWeight)))
-                    .Select(v => new Vertex(v.position - center, v.normal, v.weight))
+                    .Select(v => new Vertex((v.position - center) * sigmaNInv, v.normal, v.weight))
                     .ToArray();
                 currentClosestPoints = vertices;
 

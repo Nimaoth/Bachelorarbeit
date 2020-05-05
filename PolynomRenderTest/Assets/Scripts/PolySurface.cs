@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -9,21 +9,48 @@ using System.Diagnostics;
 
 public class PolySurface : MonoBehaviour
 {
+    public Transform rotationT;
+
     public float MAX_DIST = 500;
     public float MAX_STEPS = 500;
-    public float STEP_SIZE = 0.1f;
     public float SURF_DIST = 0.0001f;
     public float _StepSize = 0.1f;
 
-    [SerializeField]
-    public float sigmaS = 0.5f;
-    [SerializeField]
-    public float sigmaA = 0.5f;
-    [SerializeField]
-    public float sigmaT = 0.5f;
+    // surface/medium properties
+
     [SerializeField]
     [Range(-1.0f, 1.0f)]
     public float g = 0.9f;
+    [SerializeField]
+    [Min(0.0f)]
+    public float ior = 1.0f;
+
+    [SerializeField]
+    [Min(0.0f)]
+    public float sigmaS = 0.5f;
+    [SerializeField]
+    [Min(0.0f)]
+    public float sigmaA = 0.5f;
+    [SerializeField]
+    [Min(0.0f)]
+    public float sigmaT = 0.5f;
+
+    [SerializeField]
+    private float sigmaSred = 0.0f;
+    [SerializeField]
+    private float sigmaTred = 0.0f;
+    [SerializeField]
+    private float alphaRed = 0.0f;
+    [SerializeField]
+    private float alphaEff = 0.0f;
+    [SerializeField]
+    private float mad = 0.0f;
+    [SerializeField]
+    private float standardDeviation = 0.0f;
+    public float StandardDeviation => standardDeviation;
+
+
+    //
 
     [SerializeField]
     private new Camera camera;
@@ -36,13 +63,66 @@ public class PolySurface : MonoBehaviour
 
     private Vector3 center;
 
+    private float[] coefficientsTemp = new float[20];
+
+    private Vector3 rotRight;
+    private Vector3 rotUp;
+    private Vector3 rotForward;
+
     private void Start() {
         if (coefficients == null)
             coefficients = new float[20];
     }
 
+    private void CalculateEffectiveProperties() {
+        sigmaT = sigmaA + sigmaS;
+        sigmaSred = (1 - g) * sigmaS;
+        sigmaTred = sigmaA + sigmaSred;
+        alphaRed = sigmaSred / sigmaTred;
+
+        float e8 = Mathf.Pow((float)Math.E, 8);
+        alphaEff = 1 - (0.125f * Mathf.Log(e8 + alphaRed * (1 - e8)));
+
+        mad = MAD(g, alphaRed);
+
+        standardDeviation = 2 * mad / sigmaTred;
+    }
+
+    private float MAD(float g, float a_red) {
+        float e8 = Mathf.Pow((float)Math.E, 8);
+        float a_eff = 1 - (0.125f * Mathf.Log(e8 + a_red * (1 - e8)));
+        return 0.25f * g + 0.25f * a_red + a_eff;
+    }
+
     public void SetCoefficients(float[] cos) {
         coefficients = cos;
+        rotatePolynomial(coefficients, rotRight, rotUp, rotForward);
+    }
+
+    private void rotatePolynomial(float[] c, Vector3 s, Vector3 t, Vector3 n) {
+        coefficientsTemp[0] = c[0];
+        coefficientsTemp[1] = c[1]*s.x + c[2]*s.y + c[3]*s.z;
+        coefficientsTemp[2] = c[1]*t.x + c[2]*t.y + c[3]*t.z;
+        coefficientsTemp[3] = c[1]*n.x + c[2]*n.y + c[3]*n.z;
+        coefficientsTemp[4] = c[4]*Mathf.Pow(s.x, 2) + c[5]*s.x*s.y + c[6]*s.x*s.z + c[7]*Mathf.Pow(s.y, 2) + c[8]*s.y*s.z + c[9]*Mathf.Pow(s.z, 2);
+        coefficientsTemp[5] = 2*c[4]*s.x*t.x + c[5]*(s.x*t.y + s.y*t.x) + c[6]*(s.x*t.z + s.z*t.x) + 2*c[7]*s.y*t.y + c[8]*(s.y*t.z + s.z*t.y) + 2*c[9]*s.z*t.z;
+        coefficientsTemp[6] = 2*c[4]*n.x*s.x + c[5]*(n.x*s.y + n.y*s.x) + c[6]*(n.x*s.z + n.z*s.x) + 2*c[7]*n.y*s.y + c[8]*(n.y*s.z + n.z*s.y) + 2*c[9]*n.z*s.z;
+        coefficientsTemp[7] = c[4]*Mathf.Pow(t.x, 2) + c[5]*t.x*t.y + c[6]*t.x*t.z + c[7]*Mathf.Pow(t.y, 2) + c[8]*t.y*t.z + c[9]*Mathf.Pow(t.z, 2);
+        coefficientsTemp[8] = 2*c[4]*n.x*t.x + c[5]*(n.x*t.y + n.y*t.x) + c[6]*(n.x*t.z + n.z*t.x) + 2*c[7]*n.y*t.y + c[8]*(n.y*t.z + n.z*t.y) + 2*c[9]*n.z*t.z;
+        coefficientsTemp[9] = c[4]*Mathf.Pow(n.x, 2) + c[5]*n.x*n.y + c[6]*n.x*n.z + c[7]*Mathf.Pow(n.y, 2) + c[8]*n.y*n.z + c[9]*Mathf.Pow(n.z, 2);
+        coefficientsTemp[10] = c[10]*Mathf.Pow(s.x, 3) + c[11]*Mathf.Pow(s.x, 2)*s.y + c[12]*Mathf.Pow(s.x, 2)*s.z + c[13]*s.x*Mathf.Pow(s.y, 2) + c[14]*s.x*s.y*s.z + c[15]*s.x*Mathf.Pow(s.z, 2) + c[16]*Mathf.Pow(s.y, 3) + c[17]*Mathf.Pow(s.y, 2)*s.z + c[18]*s.y*Mathf.Pow(s.z, 2) + c[19]*Mathf.Pow(s.z, 3);
+        coefficientsTemp[11] = 3*c[10]*Mathf.Pow(s.x, 2)*t.x + c[11]*(Mathf.Pow(s.x, 2)*t.y + 2*s.x*s.y*t.x) + c[12]*(Mathf.Pow(s.x, 2)*t.z + 2*s.x*s.z*t.x) + c[13]*(2*s.x*s.y*t.y + Mathf.Pow(s.y, 2)*t.x) + c[14]*(s.x*s.y*t.z + s.x*s.z*t.y + s.y*s.z*t.x) + c[15]*(2*s.x*s.z*t.z + Mathf.Pow(s.z, 2)*t.x) + 3*c[16]*Mathf.Pow(s.y, 2)*t.y + c[17]*(Mathf.Pow(s.y, 2)*t.z + 2*s.y*s.z*t.y) + c[18]*(2*s.y*s.z*t.z + Mathf.Pow(s.z, 2)*t.y) + 3*c[19]*Mathf.Pow(s.z, 2)*t.z;
+        coefficientsTemp[12] = 3*c[10]*n.x*Mathf.Pow(s.x, 2) + c[11]*(2*n.x*s.x*s.y + n.y*Mathf.Pow(s.x, 2)) + c[12]*(2*n.x*s.x*s.z + n.z*Mathf.Pow(s.x, 2)) + c[13]*(n.x*Mathf.Pow(s.y, 2) + 2*n.y*s.x*s.y) + c[14]*(n.x*s.y*s.z + n.y*s.x*s.z + n.z*s.x*s.y) + c[15]*(n.x*Mathf.Pow(s.z, 2) + 2*n.z*s.x*s.z) + 3*c[16]*n.y*Mathf.Pow(s.y, 2) + c[17]*(2*n.y*s.y*s.z + n.z*Mathf.Pow(s.y, 2)) + c[18]*(n.y*Mathf.Pow(s.z, 2) + 2*n.z*s.y*s.z) + 3*c[19]*n.z*Mathf.Pow(s.z, 2);
+        coefficientsTemp[13] = 3*c[10]*s.x*Mathf.Pow(t.x, 2) + c[11]*(2*s.x*t.x*t.y + s.y*Mathf.Pow(t.x, 2)) + c[12]*(2*s.x*t.x*t.z + s.z*Mathf.Pow(t.x, 2)) + c[13]*(s.x*Mathf.Pow(t.y, 2) + 2*s.y*t.x*t.y) + c[14]*(s.x*t.y*t.z + s.y*t.x*t.z + s.z*t.x*t.y) + c[15]*(s.x*Mathf.Pow(t.z, 2) + 2*s.z*t.x*t.z) + 3*c[16]*s.y*Mathf.Pow(t.y, 2) + c[17]*(2*s.y*t.y*t.z + s.z*Mathf.Pow(t.y, 2)) + c[18]*(s.y*Mathf.Pow(t.z, 2) + 2*s.z*t.y*t.z) + 3*c[19]*s.z*Mathf.Pow(t.z, 2);
+        coefficientsTemp[14] = 6*c[10]*n.x*s.x*t.x + c[11]*(2*n.x*s.x*t.y + 2*n.x*s.y*t.x + 2*n.y*s.x*t.x) + c[12]*(2*n.x*s.x*t.z + 2*n.x*s.z*t.x + 2*n.z*s.x*t.x) + c[13]*(2*n.x*s.y*t.y + 2*n.y*s.x*t.y + 2*n.y*s.y*t.x) + c[14]*(n.x*s.y*t.z + n.x*s.z*t.y + n.y*s.x*t.z + n.y*s.z*t.x + n.z*s.x*t.y + n.z*s.y*t.x) + c[15]*(2*n.x*s.z*t.z + 2*n.z*s.x*t.z + 2*n.z*s.z*t.x) + 6*c[16]*n.y*s.y*t.y + c[17]*(2*n.y*s.y*t.z + 2*n.y*s.z*t.y + 2*n.z*s.y*t.y) + c[18]*(2*n.y*s.z*t.z + 2*n.z*s.y*t.z + 2*n.z*s.z*t.y) + 6*c[19]*n.z*s.z*t.z;
+        coefficientsTemp[15] = 3*c[10]*Mathf.Pow(n.x, 2)*s.x + c[11]*(Mathf.Pow(n.x, 2)*s.y + 2*n.x*n.y*s.x) + c[12]*(Mathf.Pow(n.x, 2)*s.z + 2*n.x*n.z*s.x) + c[13]*(2*n.x*n.y*s.y + Mathf.Pow(n.y, 2)*s.x) + c[14]*(n.x*n.y*s.z + n.x*n.z*s.y + n.y*n.z*s.x) + c[15]*(2*n.x*n.z*s.z + Mathf.Pow(n.z, 2)*s.x) + 3*c[16]*Mathf.Pow(n.y, 2)*s.y + c[17]*(Mathf.Pow(n.y, 2)*s.z + 2*n.y*n.z*s.y) + c[18]*(2*n.y*n.z*s.z + Mathf.Pow(n.z, 2)*s.y) + 3*c[19]*Mathf.Pow(n.z, 2)*s.z;
+        coefficientsTemp[16] = c[10]*Mathf.Pow(t.x, 3) + c[11]*Mathf.Pow(t.x, 2)*t.y + c[12]*Mathf.Pow(t.x, 2)*t.z + c[13]*t.x*Mathf.Pow(t.y, 2) + c[14]*t.x*t.y*t.z + c[15]*t.x*Mathf.Pow(t.z, 2) + c[16]*Mathf.Pow(t.y, 3) + c[17]*Mathf.Pow(t.y, 2)*t.z + c[18]*t.y*Mathf.Pow(t.z, 2) + c[19]*Mathf.Pow(t.z, 3);
+        coefficientsTemp[17] = 3*c[10]*n.x*Mathf.Pow(t.x, 2) + c[11]*(2*n.x*t.x*t.y + n.y*Mathf.Pow(t.x, 2)) + c[12]*(2*n.x*t.x*t.z + n.z*Mathf.Pow(t.x, 2)) + c[13]*(n.x*Mathf.Pow(t.y, 2) + 2*n.y*t.x*t.y) + c[14]*(n.x*t.y*t.z + n.y*t.x*t.z + n.z*t.x*t.y) + c[15]*(n.x*Mathf.Pow(t.z, 2) + 2*n.z*t.x*t.z) + 3*c[16]*n.y*Mathf.Pow(t.y, 2) + c[17]*(2*n.y*t.y*t.z + n.z*Mathf.Pow(t.y, 2)) + c[18]*(n.y*Mathf.Pow(t.z, 2) + 2*n.z*t.y*t.z) + 3*c[19]*n.z*Mathf.Pow(t.z, 2);
+        coefficientsTemp[18] = 3*c[10]*Mathf.Pow(n.x, 2)*t.x + c[11]*(Mathf.Pow(n.x, 2)*t.y + 2*n.x*n.y*t.x) + c[12]*(Mathf.Pow(n.x, 2)*t.z + 2*n.x*n.z*t.x) + c[13]*(2*n.x*n.y*t.y + Mathf.Pow(n.y, 2)*t.x) + c[14]*(n.x*n.y*t.z + n.x*n.z*t.y + n.y*n.z*t.x) + c[15]*(2*n.x*n.z*t.z + Mathf.Pow(n.z, 2)*t.x) + 3*c[16]*Mathf.Pow(n.y, 2)*t.y + c[17]*(Mathf.Pow(n.y, 2)*t.z + 2*n.y*n.z*t.y) + c[18]*(2*n.y*n.z*t.z + Mathf.Pow(n.z, 2)*t.y) + 3*c[19]*Mathf.Pow(n.z, 2)*t.z;
+        coefficientsTemp[19] = c[10]*Mathf.Pow(n.x, 3) + c[11]*Mathf.Pow(n.x, 2)*n.y + c[12]*Mathf.Pow(n.x, 2)*n.z + c[13]*n.x*Mathf.Pow(n.y, 2) + c[14]*n.x*n.y*n.z + c[15]*n.x*Mathf.Pow(n.z, 2) + c[16]*Mathf.Pow(n.y, 3) + c[17]*Mathf.Pow(n.y, 2)*n.z + c[18]*n.y*Mathf.Pow(n.z, 2) + c[19]*Mathf.Pow(n.z, 3);
+        for (int i = 0; i < coefficientsTemp.Length; ++i) {
+            c[i] = coefficientsTemp[i];
+        }
     }
 
     public void SetCenter(Vector3 center) {
@@ -51,6 +131,12 @@ public class PolySurface : MonoBehaviour
 
     void Update()
     {
+        rotRight = rotationT.right;
+        rotUp = rotationT.up;
+        rotForward = rotationT.forward;
+
+        CalculateEffectiveProperties();
+
         var bl = camera.ViewportPointToRay(new Vector3(0, 0, 0));
         var br = camera.ViewportPointToRay(new Vector3(1, 0, 0));
         var tl = camera.ViewportPointToRay(new Vector3(0, 1, 0));
