@@ -5,12 +5,18 @@ using System.Collections.Generic;
 using UnityEngine;
 using MathNet.Numerics.LinearAlgebra.Single;
 
+public struct Sample {
+    public Vector3 entryPoint;
+    public Vector3 exitPoint;
+    public float[] coefficients;
+}
+
 public class TestDataGenerator : MonoBehaviour
 {
+    private static MeshCollider meshCollider;
 
-    public void GenerateTestData(
+    public static void GenerateTestData(
             Mesh mesh,
-            Vector3 center,
             int minimumPointCount,
             float pointsPerAreaMultiplier,
             float standardDeviation,
@@ -20,15 +26,152 @@ public class TestDataGenerator : MonoBehaviour
             int randomVertexCount,
             float randomVertexWeight,
             float largeCoefficientPenalty,
-            int samples,
+            int randomVertexSeed,
+            int sampleCount,
             string outputPath) {
-        var pointCloud = ComputePointCloud(mesh, minimumPointCount, pointsPerAreaMultiplier, standardDeviation);
-        float[] coefficients = CalculateCoefficients(pointCloud, center, standardDeviation, weightFactor, weightScale, maxVertexCount, randomVertexCount, randomVertexWeight, largeCoefficientPenalty);
 
-        // todo
+        var stopwatch = new System.Diagnostics.Stopwatch();
+        stopwatch.Restart();
+        
+        // generate point cloud
+        var pointCloud = ComputePointCloud(mesh, minimumPointCount, pointsPerAreaMultiplier, standardDeviation);
+
+        // get random point on surface + normal
+        Vector3[] meshVertices = mesh.vertices;
+        Vector3[] meshNormals = mesh.normals;
+        int[] meshTriangleIndices = mesh.triangles;
+
+        if (meshCollider == null) {
+            var tempObject = new GameObject();
+            meshCollider = tempObject.AddComponent<MeshCollider>();
+        }
+        meshCollider.sharedMesh = mesh;
+
+        var samples = new List<Sample>(sampleCount);
+
+        for (int i = 0; i < sampleCount; i++) {
+
+            // generate random point and normal on surface
+            int randomTriangleIndex = UnityEngine.Random.Range(0, meshTriangleIndices.Length / 3) * 3;
+            var (b0, b1, b2) = TestDataGenerator.GetRandomBarycentric();
+            Vector3 randomSurfacePoint =
+                b0 * meshVertices[meshTriangleIndices[randomTriangleIndex + 0]] +
+                b1 * meshVertices[meshTriangleIndices[randomTriangleIndex + 1]] +
+                b2 * meshVertices[meshTriangleIndices[randomTriangleIndex + 2]];
+            Vector3 randomSurfacePointNormal =
+                b0 * meshNormals[meshTriangleIndices[randomTriangleIndex + 0]] +
+                b1 * meshNormals[meshTriangleIndices[randomTriangleIndex + 1]] +
+                b2 * meshNormals[meshTriangleIndices[randomTriangleIndex + 2]];
+            randomSurfacePointNormal = randomSurfacePointNormal.normalized;
+
+            Vector3 normalCSRight = GetPerpendicular(randomSurfacePointNormal);
+            Vector3 normalCSUp = Vector3.Cross(randomSurfacePointNormal, normalCSRight);
+            Vector3 randomNormalTemp = UnityEngine.Random.onUnitSphere;
+            randomNormalTemp.z = Mathf.Abs(randomNormalTemp.z);
+            randomNormalTemp = randomNormalTemp.x * normalCSRight + randomNormalTemp.y * normalCSUp + randomNormalTemp.z * randomSurfacePointNormal;
+
+            Vector3 direction = -randomNormalTemp.normalized;
+            Vector3 origin = randomSurfacePoint - direction * 0.1f;
+
+            // calculate coefficients for random point on surfice
+            float[] coefficients = TestDataGenerator.CalculateCoefficients(
+                pointCloud.vertices,
+                randomSurfacePoint,
+                standardDeviation,
+                weightFactor,
+                weightScale,
+                maxVertexCount,
+                randomVertexCount,
+                randomVertexWeight,
+                largeCoefficientPenalty,
+                randomVertexSeed);
+
+            // SimulatePath(origin, direction);
+
+            samples.Add(new Sample{
+                entryPoint = randomSurfacePoint,
+                exitPoint = Vector3.zero, // @todo
+                // coefficients = coefficients
+                coefficients = null
+            });
+
+        }
+
+        var time = stopwatch.Elapsed;
+
+        Debug.Log($"Generating {sampleCount} samples took {time}");
     }
 
-    private static PointCloud ComputePointCloud(Mesh mesh, int minimumPointCount, float pointsPerAreaMultiplier, float standardDeviation) {
+    // private Vector3 SimulatePath(Vector3 origin, Vector3 direction) {
+    //     direction = direction.normalized;
+
+    //     float maxDist = float.MaxValue;
+
+    //     for (int i = 0; i < 500; i++) {
+    //         var (dist, inside) = surface.RayMarch(origin, direction, maxDist);
+    //         var newPoint = origin + direction * dist;
+    //         var point = new PathPoint{
+    //             position = newPoint,
+    //             direction = direction
+    //         };
+
+    //         var normal = surface.GetNormalAt(newPoint);
+    //         origin = newPoint - normal * surface.SURF_DIST * 2;
+
+    //         if (!inside) {
+    //             // @todo: refract
+    //             var (_dist, _) = surface.RayMarch(origin, direction, 10.0f);
+    //             currentPath.Add(point);
+    //             currentPath.Add(new PathPoint{
+    //                 position = origin + direction * 10,
+    //             });
+    //             break;
+    //         }
+
+    //         var g = surface.g;
+    //         // g = Mathf.Clamp(Mathf.Lerp(-1, 1, surface.EvaluateAt(origin) / Temp + 1), -1, 1);
+
+    //         // still inside, set random direction and maxDist
+    //         if (g == 0) {
+    //             direction = UnityEngine.Random.onUnitSphere;
+    //         } else {
+    //             float rand = UnityEngine.Random.Range(0.0f, 1.0f);
+    //             float cosAngle = InvIntPhaseFunction(rand, g);
+    //             float theta = Mathf.Acos(cosAngle);
+    //             float d = 1 / Mathf.Tan(theta);
+
+    //             // Debug.Log($"rand: {rand}, cosAngle: {cosAngle}, theta: {theta}, d: {d}");
+
+    //             if (d == float.PositiveInfinity) {
+
+    //             } else if (d == float.NegativeInfinity) {
+    //                 direction = -direction;
+    //             } else {
+    //                 var right = GetPerpendicular(direction).normalized;
+    //                 var up = Vector3.Cross(right, direction).normalized;
+    //                 var uv = UnityEngine.Random.insideUnitCircle;
+
+    //                 point.uv = uv;
+    //                 point.right = right;
+    //                 point.up = up;
+
+    //                 // Debug.Log($"right: {right}, up: {up}, uv: {uv}");
+
+    //                 direction = uv.x * right + uv.y * up + d * direction;
+    //                 direction = direction.normalized;
+    //             }
+    //         }
+
+    //         // Debug.Log($"direction: {direction}");
+
+    //         // direction = UnityEngine.Random.onUnitSphere;
+    //         maxDist = UnityEngine.Random.Range(PathMinDist, PathMaxDist);
+    //         point.direction = point.direction * Vector3.Dot(point.direction, direction * maxDist);
+    //         currentPath.Add(point);
+    //     }
+    // }
+
+    public static PointCloud ComputePointCloud(Mesh mesh, int minimumPointCount, float pointsPerAreaMultiplier, float standardDeviation) {
         Vector3[] positions = mesh.vertices;
         Vector3[] normals = mesh.normals;
         int[] triangles = mesh.GetTriangles(0);
@@ -73,11 +216,7 @@ public class TestDataGenerator : MonoBehaviour
             // Debug.Log($"Tri {i / 3}: area = {area} ({area/totalSurfaceArea*100}% of total), generating {(int)pointsInTriangle} points");
 
             for (int k = 0; k < (int)pointsInTriangle; k++) {
-                float r1 = Mathf.Sqrt(UnityEngine.Random.Range(0.0f, 1.0f));
-                float r2 = UnityEngine.Random.Range(0.0f, 1.0f);
-                float a = 1 - r1;
-                float b = r1 * (1 - r2);
-                float c = r1 * r2;
+                var (a, b, c) = GetRandomBarycentric();
 
                 Vector3 pos = (a * v1 + b * v2 + c * v3);
                 Vector3 normal = (a * n1 + b * n2 + c * n3).normalized;
@@ -91,13 +230,21 @@ public class TestDataGenerator : MonoBehaviour
         };
     }
 
-    private static float[] CalculateCoefficients(PointCloud pointCloud, Vector3 center, float standardDeviation, float weightFactor, float weightScale, int maxVertexCount, int randomVertexCount, float randomVertexWeight, float largeCoefficientPenalty) {
-        var random = new System.Random();
+    public static (float, float, float) GetRandomBarycentric() {
+        float r1 = Mathf.Sqrt(UnityEngine.Random.Range(0.0f, 1.0f));
+        float r2 = UnityEngine.Random.Range(0.0f, 1.0f);
+        float a = 1 - r1;
+        float b = r1 * (1 - r2);
+        float c = r1 * r2;
+        return (a, b, c);
+    }
+
+    public static float[] CalculateCoefficients(Vertex[] vertices, Vector3 center, float standardDeviation, float weightFactor, float weightScale, int maxVertexCount, int randomVertexCount, float randomVertexWeight, float largeCoefficientPenalty, int randomVertexSeed) {
+        var random = new System.Random(randomVertexSeed);
 
         float sigmaNInv = 1.0f / standardDeviation;
 
         float maxDist = Mathf.Pow(-2 * Mathf.Log(0.01f) / weightScale, 2);
-        Vertex[] vertices = pointCloud.vertices;
         vertices = vertices
             .Where(v => (v.position - center).sqrMagnitude <= maxDist)
             .OrderBy(v => (v.position - center).sqrMagnitude)
@@ -113,6 +260,15 @@ public class TestDataGenerator : MonoBehaviour
         var coefficients = c.Column(0).ToArray();
         coefficients[0] = 0;
         return coefficients;
+    }
+
+    private static Vector3 GetPerpendicular(Vector3 p) {
+        var t = new Vector3(p.z, p.z, -p.x - p.y);
+        if (t.sqrMagnitude < 0.01f) {
+            return new Vector3(-p.y - p.z, p.x, p.x);
+        } else {
+            return t;
+        }
     }
 
     private static float AreaOfTriangle(Vector3 v1, Vector3 v2, Vector3 v3) {
