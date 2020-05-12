@@ -470,7 +470,6 @@ MonoBehaviour:
   rotationT: {fileID: 1957256080}
   MAX_DIST: 500
   MAX_STEPS: 500
-  STEP_SIZE: 0.1
   SURF_DIST: 0.0001
   _StepSize: 0.01
   g: 0.9
@@ -2082,7 +2081,7 @@ MonoBehaviour:
   randomVertexSeed: 123456789
   randomVertexCount: 32
   randomVertexWeight: 0.001
-  weightScale: 12.5
+  weightScale: 5
   weightFactor: 1
   objects:
   - {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
@@ -2098,6 +2097,7 @@ MonoBehaviour:
   - {fileID: -2432090755550338912, guid: 01996fb1623b4a04d9e3ce980cfb2d26, type: 3}
   - {fileID: -2432090755550338912, guid: e5fc54ab2004ba441b82b77a564511ef, type: 3}
   - {fileID: -2432090755550338912, guid: 751d9d1555895004cad89d95053a833f, type: 3}
+  - {fileID: -2432090755550338912, guid: 3d856b17669a43b4b9ba3ada64ff0854, type: 3}
   PathMinDist: 0.01
   PathMaxDist: 0.1
   PathAxisLen: 0.1

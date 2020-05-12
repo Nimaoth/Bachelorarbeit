@@ -1,0 +1,10 @@
+g       : uniform [0, 0.95]
+ior     : uniform [1, 1.5]
+sigma t : spectrum [1]
+albedo  : 
+    random albedo:
+        effective albedo: uniform [0, 1]
+        (1 - e^(-8 * effective albedo)) / (1 - e^-8)
+    spectrum [max[random albedo, 0.05]]
+
+scale factor: 

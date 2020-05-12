@@ -73,7 +73,7 @@ Material:
     - _SrcBlend: 1
     - _UVSec: 0
     - _WeightFactor: 1
-    - _WeightScale: 12.5
+    - _WeightScale: 5
     - _ZWrite: 1
     m_Colors:
     - _Color: {r: 0, g: 0.04290104, b: 1, a: 0.5019608}
