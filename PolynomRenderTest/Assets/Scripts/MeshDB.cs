@@ -305,7 +305,6 @@ public class MeshDB : MonoBehaviour
             currentPointCloud.mesh,
             minimumPointCount,
             pointsPerAreaMultiplier,
-            surface.StandardDeviation,
             weightFactor,
             weightScale,
             maxVertexCount,
@@ -385,19 +384,19 @@ public class MeshDB : MonoBehaviour
         float maxDist = float.MaxValue;
 
         for (int i = 0; i < 1500; i++) {
-            var (dist, inside) = surface.RayMarch(origin, direction, maxDist);
+            var (dist, inside) = PolySurface.RayMarch(surface.Coefficients, origin, direction, maxDist, surface.Center);
             var newPoint = origin + direction * dist;
             var point = new PathPoint{
                 position = newPoint,
                 direction = direction
             };
 
-            var normal = surface.GetNormalAt(newPoint);
-            origin = newPoint - normal * surface.SURF_DIST * 2;
+            var normal = PolySurface.GetNormalAt(surface.Coefficients, newPoint, surface.Center);
+            origin = newPoint - normal * PolySurface.SURF_DIST * 2;
 
             if (!inside) {
                 // @todo: refract
-                var (_dist, _) = surface.RayMarch(origin, direction, 10.0f);
+                var (_dist, _) = PolySurface.RayMarch(surface.Coefficients, origin, direction, 10.0f, surface.Center);
                 currentPath.Add(point);
                 currentPath.Add(new PathPoint{
                     position = origin + direction * 10,
@@ -442,7 +441,8 @@ public class MeshDB : MonoBehaviour
             // Debug.Log($"direction: {direction}");
 
             // direction = UnityEngine.Random.onUnitSphere;
-            maxDist = UnityEngine.Random.Range(PathMinDist, PathMaxDist);
+            // maxDist = UnityEngine.Random.Range(PathMinDist, PathMaxDist);
+            maxDist = -Mathf.Log(UnityEngine.Random.Range(0.001f, 1)) / surface.sigmaS;
             point.direction = point.direction * Vector3.Dot(point.direction, direction * maxDist);
             currentPath.Add(point);
         }

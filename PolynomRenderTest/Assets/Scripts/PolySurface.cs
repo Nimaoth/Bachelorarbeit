@@ -11,10 +11,10 @@ public class PolySurface : MonoBehaviour
 {
     public Transform rotationT;
 
-    public float MAX_DIST = 500;
-    public float MAX_STEPS = 500;
-    public float SURF_DIST = 0.0001f;
-    public float _StepSize = 0.1f;
+    public static float MAX_DIST = 500;
+    public static float MAX_STEPS = 500;
+    public static float SURF_DIST = 0.0001f;
+    public static float _StepSize = 0.1f;
 
     // surface/medium properties
 
@@ -37,6 +37,7 @@ public class PolySurface : MonoBehaviour
 
     [SerializeField]
     private float sigmaSred = 0.0f;
+    public float SigmaSReduced => sigmaSred;
     [SerializeField]
     private float sigmaTred = 0.0f;
     [SerializeField]
@@ -60,8 +61,10 @@ public class PolySurface : MonoBehaviour
 
     [SerializeField]
     private volatile float[] coefficients;
+    public float[] Coefficients => coefficients;
 
     private Vector3 center;
+    public Vector3 Center => center;
 
     private float[] coefficientsTemp = new float[20];
 
@@ -158,7 +161,7 @@ public class PolySurface : MonoBehaviour
         material.SetFloatArray("coefficients", coefficients);
     }
 
-    public Vector3 GetNormalAt(Vector3 pos) {
+    public static Vector3 GetNormalAt(float[] coefficients, Vector3 pos, Vector3 center) {
         // specifically for poly surface
         pos -= center;
         float x = pos.x;
@@ -191,7 +194,7 @@ public class PolySurface : MonoBehaviour
         ).normalized;
     }
 
-    public float EvaluateAt(Vector3 p) {
+    public static float EvaluateAt(float[] coefficients, Vector3 p, Vector3 center) {
         p -= center;
         float x = p.x;
         float y = p.y;
@@ -219,13 +222,13 @@ public class PolySurface : MonoBehaviour
             coefficients[19] * z * z * z;
     }
 
-    private float BinarySearch(Vector3 ro, Vector3 rd, float t_min, float t_max) {
-        float d_min = EvaluateAt(ro + rd * t_min);
-        float d_max = EvaluateAt(ro + rd * t_max);
+    private static float BinarySearch(float[] coefficients, Vector3 ro, Vector3 rd, float t_min, float t_max, Vector3 center) {
+        float d_min = EvaluateAt(coefficients, ro + rd * t_min, center);
+        float d_max = EvaluateAt(coefficients, ro + rd * t_max, center);
 
         for(int i = 0; Mathf.Abs(d_min) >= SURF_DIST && i < MAX_STEPS / 8; i++) {
             float t = (t_min + t_max) * 0.5f;
-            float d = EvaluateAt(ro + rd * t);
+            float d = EvaluateAt(coefficients, ro + rd * t, center);
 
             if (Mathf.Sign(d) == Mathf.Sign(d_min)) {
                 t_min = t;
@@ -237,13 +240,13 @@ public class PolySurface : MonoBehaviour
         return t_max;
     }
 
-    public (float dist, bool inside) RayMarch(Vector3 ro, Vector3 rd, float t_max) {
+    public static (float dist, bool inside) RayMarch(float[] coefficients, Vector3 ro, Vector3 rd, float t_max, Vector3 center) {
         float stepSize = _StepSize;
 
         float t_prev = 0;
         float t = stepSize;
 
-        float prev_dist = EvaluateAt(ro);
+        float prev_dist = EvaluateAt(coefficients, ro, center);
         float dist;
 
         bool inside = prev_dist < 0;
@@ -253,10 +256,10 @@ public class PolySurface : MonoBehaviour
                 return (MAX_DIST + 1.0f, inside);
             }
             Vector3 p = ro + rd * t;
-            dist = EvaluateAt(p);
+            dist = EvaluateAt(coefficients, p, center);
 
             if (t >= t_max) {
-                return (t_max, EvaluateAt(ro + rd * t_max) < 0);
+                return (t_max, EvaluateAt(coefficients, ro + rd * t_max, center) < 0);
             }
 
             if (inside && dist >= 0) {
@@ -274,7 +277,7 @@ public class PolySurface : MonoBehaviour
                 return (t, inside);
         }
 
-        t = BinarySearch(ro, rd, t_prev, t);
+        t = BinarySearch(coefficients, ro, rd, t_prev, t, center);
 
         return (t, !inside);
     }
