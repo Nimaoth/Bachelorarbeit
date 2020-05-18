@@ -146,6 +146,11 @@ public class MeshDB : MonoBehaviour
 
     public float pathStartRadius = 5.0f;
 
+    public int dataSetSize = 100;
+
+    [Range(0, 1)]
+    public float trainingProgress = 0.0f;
+
     // methods
 
     void Start() {
@@ -312,7 +317,11 @@ public class MeshDB : MonoBehaviour
             randomVertexWeight,
             largeCoefficientPenalty,
             randomVertexSeed,
-            10, "");
+            dataSetSize,
+            "",
+            progress => {
+                trainingProgress = progress;
+            });
 
         // get random point on surface + normal
         // Vector3[] meshVertices = currentPointCloud.mesh.vertices;
@@ -462,8 +471,8 @@ public class MeshDB : MonoBehaviour
     }
 
     private void ComputePoints(PointCloud pointCloud) {
-        var result = TestDataGenerator.ComputePointCloud(pointCloud.mesh, minimumPointCount, pointsPerAreaMultiplier, surface.StandardDeviation);
-        pointCloud.vertices = result.vertices;
+        var random = new System.Random(randomVertexSeed);
+        pointCloud.vertices = TestDataGenerator.ComputePointCloud(random, pointCloud.mesh.vertices, pointCloud.mesh.normals, pointCloud.mesh.triangles, minimumPointCount, pointsPerAreaMultiplier, surface.StandardDeviation);
     }
 
     private void SetActivePointCloud(PointCloud pc) {
@@ -480,12 +489,13 @@ public class MeshDB : MonoBehaviour
         int msPerFrame = 1000 / targetFPS;
 
         var watch = new System.Diagnostics.Stopwatch();
-        var random = new System.Random();
+        var random = new System.Random(randomVertexSeed);
 
         while (true) {
             watch.Restart();
             if (currentVertices?.Length > 0) {
                 coefficients = TestDataGenerator.CalculateCoefficients(
+                    random,
                     currentVertices,
                     currentCenter,
                     surface.StandardDeviation,
@@ -494,8 +504,7 @@ public class MeshDB : MonoBehaviour
                     maxVertexCount,
                     randomVertexCount,
                     randomVertexWeight,
-                    largeCoefficientPenalty,
-                    randomVertexSeed);
+                    largeCoefficientPenalty);
                 surface.SetCenter(currentCenter);
                 surface.SetCoefficients(coefficients);
             }
