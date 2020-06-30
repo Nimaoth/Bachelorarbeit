@@ -10,6 +10,8 @@ using Newtonsoft.Json;
 using System.Threading;
 using System.Runtime.InteropServices.WindowsRuntime;
 using MathNet.Numerics.Random;
+using UnityEditor;
+using System.Dynamic;
 
 [Serializable]
 public struct vec3
@@ -22,12 +24,20 @@ public struct vec3
         this.y = y;
         this.z = z;
     }
+
+    public vec3(Vector3 v)
+    {
+        this.x = v.x;
+        this.y = v.y;
+        this.z = v.z;
+    }
 }
 
 [Serializable]
 public struct Sample {
-    public float[] x_train;
-    public float[] y_train;
+    public float[] features;
+    public float[] out_pos;
+    public float absorbtion;
     //public vec3 entryPoint;
     //public vec3 exitPoint;
     //public float[] coefficients;
@@ -36,6 +46,14 @@ public struct Sample {
     //public float sigmaT;
     //public float g;
     //public float ior;
+}
+
+public struct AvgStats
+{
+    public double effectiveAlbedo;
+    public double g;
+    public double ior;
+    public vec3 pos;
 }
 
 public class TestDataGenerator : MonoBehaviour
@@ -59,6 +77,7 @@ public class TestDataGenerator : MonoBehaviour
             int randomVertexSeed,
             int sampleCount,
             string outputPath,
+            float distScale,
             Action<float> callback) {
 
         if (trainThread != null)
@@ -87,6 +106,11 @@ public class TestDataGenerator : MonoBehaviour
             stopwatch.Restart();
 
             var samples = new List<Sample>(sampleCount);
+
+            double effectiveAlbedoAvg = 0.0;
+            double gAvg = 0.0;
+            double iorAvg = 0.0;
+            Vector3 posAvg = Vector3.zero;
 
             for (int i = 0; i < sampleCount; i++)
             {
@@ -136,6 +160,10 @@ public class TestDataGenerator : MonoBehaviour
                     standardDeviation = 2 * mad / sigmaTred;
                 }
 
+                effectiveAlbedoAvg += effectiveAlbedo;
+                gAvg += g;
+                iorAvg += ior;
+
                 // calculate coefficients for random point on surfice
                 float[] coefficients = TestDataGenerator.CalculateCoefficients(
                     random,
@@ -149,16 +177,45 @@ public class TestDataGenerator : MonoBehaviour
                     randomVertexWeight,
                     largeCoefficientPenalty);
 
-                Vector3? exitPointOpt = SimulatePath(random, coefficients, origin, direction, randomSurfacePoint, g, sigmaSRed);
+
+                //origin = new Vector3(0, 0, -1);
+                //direction = new Vector3(0, 0, 1);
+
+                int absorbtionSum = 0;
+                int absorbtionTestCount = 128;
+
+                Vector3? exitPointOpt = null;
+                for (int k = 0; k < absorbtionTestCount; k++)
+                {
+                    var p = SimulatePath(random, coefficients, origin, direction, randomSurfacePoint, g, sigmaSRed, sigmaA, distScale, null);
+                    if (exitPointOpt == null && p != null)
+                        exitPointOpt = p;
+
+                    if (p == null) absorbtionSum += 1;
+                }
+
+                float absorbtion = (float)absorbtionSum / (float)absorbtionTestCount;
 
                 // @todo: handle absorbed data
                 if (exitPointOpt != null)
                 {
-                    Vector3 exitPoint = exitPointOpt.Value;
+                    posAvg += exitPointOpt.Value;
+
+                    // rotate polynomial so the incident direction aligns with the z-axis
+                    Vector3 right = GetPerpendicular(direction);
+                    Vector3 up = Vector3.Cross(right, direction);
+                    RotatePolynomial(coefficients, right, up, direction);
+
+                    Vector4 Vec3To4(Vector3 v, float w) => new Vector4(v.x, v.y, v.z, w);
+
+                    // exit point should be in local space
+                    var rotMatrix = new Matrix4x4(Vec3To4(right, 0), Vec3To4(up, 0), Vec3To4(-direction, 0), new Vector4(0, 0, 0, 1));
+                    Vector3 exitPoint = rotMatrix * (exitPointOpt.Value - randomSurfacePoint);
                     samples.Add(new Sample
                     {
-                        x_train = coefficients.Concat(new float[] { effectiveAlbedo, g, ior }).ToArray(),
-                        y_train = new float[] { exitPoint.x, exitPoint.y, exitPoint.z },
+                        features = coefficients.Concat(new float[] { effectiveAlbedo, g, ior }).ToArray(),
+                        out_pos = new float[] { exitPoint.x, exitPoint.y, exitPoint.z },
+                        absorbtion = absorbtion,
                         //entryPoint      = new vec3(randomSurfacePoint.x, randomSurfacePoint.y, randomSurfacePoint.z),
                         //exitPoint       = new vec3(exitPoint.x, exitPoint.y, exitPoint.z),
                         //coefficients    = coefficients,
@@ -177,6 +234,16 @@ public class TestDataGenerator : MonoBehaviour
             var now = DateTime.Now;
             File.WriteAllText($"../train_data/samples_{now.Year}-{now.Month}-{now.Day}--{now.Hour}-{now.Minute}-{now.Second}.json", jsonString);
 
+
+            var avg = new AvgStats {
+                effectiveAlbedo = effectiveAlbedoAvg / sampleCount,
+                g = gAvg / sampleCount,
+                ior = iorAvg / sampleCount,
+                pos = new vec3(posAvg / sampleCount)
+            };
+            var avgJsonString = JsonConvert.SerializeObject(avg, Formatting.Indented);
+            File.WriteAllText($"../train_data/stats_{now.Year}-{now.Month}-{now.Day}--{now.Hour}-{now.Minute}-{now.Second}.json", avgJsonString);
+
             elapsedTime = stopwatch.Elapsed;
 
             //Debug.Log($"Generating {sampleCount} samples took {time}");
@@ -193,14 +260,14 @@ public class TestDataGenerator : MonoBehaviour
     {
         while (true)
         {
-            Vector2 vec = new Vector2((float)random.NextDouble(), (float)random.NextDouble());
+            Vector2 vec = new Vector2((float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f);
             if (vec.sqrMagnitude <= 1)
                 return vec;
         }
     }
     private static Vector3 OnUnitSphere(System.Random random)
     {
-        Vector3 vec = new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble());
+        Vector3 vec = new Vector3((float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f);
         return vec.normalized;
     }
 
@@ -215,16 +282,47 @@ public class TestDataGenerator : MonoBehaviour
     }
 
 
+    private static void RotatePolynomial(float[] c, Vector3 right, Vector3 up, Vector3 forward)
+    {
+        float[] coefficientsTemp = new float[20];
+        coefficientsTemp[0] = c[0];
+        coefficientsTemp[1] = c[1] * right.x + c[2] * right.y + c[3] * right.z;
+        coefficientsTemp[2] = c[1] * up.x + c[2] * up.y + c[3] * up.z;
+        coefficientsTemp[3] = c[1] * forward.x + c[2] * forward.y + c[3] * forward.z;
+        coefficientsTemp[4] = c[4] * Mathf.Pow(right.x, 2) + c[5] * right.x * right.y + c[6] * right.x * right.z + c[7] * Mathf.Pow(right.y, 2) + c[8] * right.y * right.z + c[9] * Mathf.Pow(right.z, 2);
+        coefficientsTemp[5] = 2 * c[4] * right.x * up.x + c[5] * (right.x * up.y + right.y * up.x) + c[6] * (right.x * up.z + right.z * up.x) + 2 * c[7] * right.y * up.y + c[8] * (right.y * up.z + right.z * up.y) + 2 * c[9] * right.z * up.z;
+        coefficientsTemp[6] = 2 * c[4] * forward.x * right.x + c[5] * (forward.x * right.y + forward.y * right.x) + c[6] * (forward.x * right.z + forward.z * right.x) + 2 * c[7] * forward.y * right.y + c[8] * (forward.y * right.z + forward.z * right.y) + 2 * c[9] * forward.z * right.z;
+        coefficientsTemp[7] = c[4] * Mathf.Pow(up.x, 2) + c[5] * up.x * up.y + c[6] * up.x * up.z + c[7] * Mathf.Pow(up.y, 2) + c[8] * up.y * up.z + c[9] * Mathf.Pow(up.z, 2);
+        coefficientsTemp[8] = 2 * c[4] * forward.x * up.x + c[5] * (forward.x * up.y + forward.y * up.x) + c[6] * (forward.x * up.z + forward.z * up.x) + 2 * c[7] * forward.y * up.y + c[8] * (forward.y * up.z + forward.z * up.y) + 2 * c[9] * forward.z * up.z;
+        coefficientsTemp[9] = c[4] * Mathf.Pow(forward.x, 2) + c[5] * forward.x * forward.y + c[6] * forward.x * forward.z + c[7] * Mathf.Pow(forward.y, 2) + c[8] * forward.y * forward.z + c[9] * Mathf.Pow(forward.z, 2);
+        coefficientsTemp[10] = c[10] * Mathf.Pow(right.x, 3) + c[11] * Mathf.Pow(right.x, 2) * right.y + c[12] * Mathf.Pow(right.x, 2) * right.z + c[13] * right.x * Mathf.Pow(right.y, 2) + c[14] * right.x * right.y * right.z + c[15] * right.x * Mathf.Pow(right.z, 2) + c[16] * Mathf.Pow(right.y, 3) + c[17] * Mathf.Pow(right.y, 2) * right.z + c[18] * right.y * Mathf.Pow(right.z, 2) + c[19] * Mathf.Pow(right.z, 3);
+        coefficientsTemp[11] = 3 * c[10] * Mathf.Pow(right.x, 2) * up.x + c[11] * (Mathf.Pow(right.x, 2) * up.y + 2 * right.x * right.y * up.x) + c[12] * (Mathf.Pow(right.x, 2) * up.z + 2 * right.x * right.z * up.x) + c[13] * (2 * right.x * right.y * up.y + Mathf.Pow(right.y, 2) * up.x) + c[14] * (right.x * right.y * up.z + right.x * right.z * up.y + right.y * right.z * up.x) + c[15] * (2 * right.x * right.z * up.z + Mathf.Pow(right.z, 2) * up.x) + 3 * c[16] * Mathf.Pow(right.y, 2) * up.y + c[17] * (Mathf.Pow(right.y, 2) * up.z + 2 * right.y * right.z * up.y) + c[18] * (2 * right.y * right.z * up.z + Mathf.Pow(right.z, 2) * up.y) + 3 * c[19] * Mathf.Pow(right.z, 2) * up.z;
+        coefficientsTemp[12] = 3 * c[10] * forward.x * Mathf.Pow(right.x, 2) + c[11] * (2 * forward.x * right.x * right.y + forward.y * Mathf.Pow(right.x, 2)) + c[12] * (2 * forward.x * right.x * right.z + forward.z * Mathf.Pow(right.x, 2)) + c[13] * (forward.x * Mathf.Pow(right.y, 2) + 2 * forward.y * right.x * right.y) + c[14] * (forward.x * right.y * right.z + forward.y * right.x * right.z + forward.z * right.x * right.y) + c[15] * (forward.x * Mathf.Pow(right.z, 2) + 2 * forward.z * right.x * right.z) + 3 * c[16] * forward.y * Mathf.Pow(right.y, 2) + c[17] * (2 * forward.y * right.y * right.z + forward.z * Mathf.Pow(right.y, 2)) + c[18] * (forward.y * Mathf.Pow(right.z, 2) + 2 * forward.z * right.y * right.z) + 3 * c[19] * forward.z * Mathf.Pow(right.z, 2);
+        coefficientsTemp[13] = 3 * c[10] * right.x * Mathf.Pow(up.x, 2) + c[11] * (2 * right.x * up.x * up.y + right.y * Mathf.Pow(up.x, 2)) + c[12] * (2 * right.x * up.x * up.z + right.z * Mathf.Pow(up.x, 2)) + c[13] * (right.x * Mathf.Pow(up.y, 2) + 2 * right.y * up.x * up.y) + c[14] * (right.x * up.y * up.z + right.y * up.x * up.z + right.z * up.x * up.y) + c[15] * (right.x * Mathf.Pow(up.z, 2) + 2 * right.z * up.x * up.z) + 3 * c[16] * right.y * Mathf.Pow(up.y, 2) + c[17] * (2 * right.y * up.y * up.z + right.z * Mathf.Pow(up.y, 2)) + c[18] * (right.y * Mathf.Pow(up.z, 2) + 2 * right.z * up.y * up.z) + 3 * c[19] * right.z * Mathf.Pow(up.z, 2);
+        coefficientsTemp[14] = 6 * c[10] * forward.x * right.x * up.x + c[11] * (2 * forward.x * right.x * up.y + 2 * forward.x * right.y * up.x + 2 * forward.y * right.x * up.x) + c[12] * (2 * forward.x * right.x * up.z + 2 * forward.x * right.z * up.x + 2 * forward.z * right.x * up.x) + c[13] * (2 * forward.x * right.y * up.y + 2 * forward.y * right.x * up.y + 2 * forward.y * right.y * up.x) + c[14] * (forward.x * right.y * up.z + forward.x * right.z * up.y + forward.y * right.x * up.z + forward.y * right.z * up.x + forward.z * right.x * up.y + forward.z * right.y * up.x) + c[15] * (2 * forward.x * right.z * up.z + 2 * forward.z * right.x * up.z + 2 * forward.z * right.z * up.x) + 6 * c[16] * forward.y * right.y * up.y + c[17] * (2 * forward.y * right.y * up.z + 2 * forward.y * right.z * up.y + 2 * forward.z * right.y * up.y) + c[18] * (2 * forward.y * right.z * up.z + 2 * forward.z * right.y * up.z + 2 * forward.z * right.z * up.y) + 6 * c[19] * forward.z * right.z * up.z;
+        coefficientsTemp[15] = 3 * c[10] * Mathf.Pow(forward.x, 2) * right.x + c[11] * (Mathf.Pow(forward.x, 2) * right.y + 2 * forward.x * forward.y * right.x) + c[12] * (Mathf.Pow(forward.x, 2) * right.z + 2 * forward.x * forward.z * right.x) + c[13] * (2 * forward.x * forward.y * right.y + Mathf.Pow(forward.y, 2) * right.x) + c[14] * (forward.x * forward.y * right.z + forward.x * forward.z * right.y + forward.y * forward.z * right.x) + c[15] * (2 * forward.x * forward.z * right.z + Mathf.Pow(forward.z, 2) * right.x) + 3 * c[16] * Mathf.Pow(forward.y, 2) * right.y + c[17] * (Mathf.Pow(forward.y, 2) * right.z + 2 * forward.y * forward.z * right.y) + c[18] * (2 * forward.y * forward.z * right.z + Mathf.Pow(forward.z, 2) * right.y) + 3 * c[19] * Mathf.Pow(forward.z, 2) * right.z;
+        coefficientsTemp[16] = c[10] * Mathf.Pow(up.x, 3) + c[11] * Mathf.Pow(up.x, 2) * up.y + c[12] * Mathf.Pow(up.x, 2) * up.z + c[13] * up.x * Mathf.Pow(up.y, 2) + c[14] * up.x * up.y * up.z + c[15] * up.x * Mathf.Pow(up.z, 2) + c[16] * Mathf.Pow(up.y, 3) + c[17] * Mathf.Pow(up.y, 2) * up.z + c[18] * up.y * Mathf.Pow(up.z, 2) + c[19] * Mathf.Pow(up.z, 3);
+        coefficientsTemp[17] = 3 * c[10] * forward.x * Mathf.Pow(up.x, 2) + c[11] * (2 * forward.x * up.x * up.y + forward.y * Mathf.Pow(up.x, 2)) + c[12] * (2 * forward.x * up.x * up.z + forward.z * Mathf.Pow(up.x, 2)) + c[13] * (forward.x * Mathf.Pow(up.y, 2) + 2 * forward.y * up.x * up.y) + c[14] * (forward.x * up.y * up.z + forward.y * up.x * up.z + forward.z * up.x * up.y) + c[15] * (forward.x * Mathf.Pow(up.z, 2) + 2 * forward.z * up.x * up.z) + 3 * c[16] * forward.y * Mathf.Pow(up.y, 2) + c[17] * (2 * forward.y * up.y * up.z + forward.z * Mathf.Pow(up.y, 2)) + c[18] * (forward.y * Mathf.Pow(up.z, 2) + 2 * forward.z * up.y * up.z) + 3 * c[19] * forward.z * Mathf.Pow(up.z, 2);
+        coefficientsTemp[18] = 3 * c[10] * Mathf.Pow(forward.x, 2) * up.x + c[11] * (Mathf.Pow(forward.x, 2) * up.y + 2 * forward.x * forward.y * up.x) + c[12] * (Mathf.Pow(forward.x, 2) * up.z + 2 * forward.x * forward.z * up.x) + c[13] * (2 * forward.x * forward.y * up.y + Mathf.Pow(forward.y, 2) * up.x) + c[14] * (forward.x * forward.y * up.z + forward.x * forward.z * up.y + forward.y * forward.z * up.x) + c[15] * (2 * forward.x * forward.z * up.z + Mathf.Pow(forward.z, 2) * up.x) + 3 * c[16] * Mathf.Pow(forward.y, 2) * up.y + c[17] * (Mathf.Pow(forward.y, 2) * up.z + 2 * forward.y * forward.z * up.y) + c[18] * (2 * forward.y * forward.z * up.z + Mathf.Pow(forward.z, 2) * up.y) + 3 * c[19] * Mathf.Pow(forward.z, 2) * up.z;
+        coefficientsTemp[19] = c[10] * Mathf.Pow(forward.x, 3) + c[11] * Mathf.Pow(forward.x, 2) * forward.y + c[12] * Mathf.Pow(forward.x, 2) * forward.z + c[13] * forward.x * Mathf.Pow(forward.y, 2) + c[14] * forward.x * forward.y * forward.z + c[15] * forward.x * Mathf.Pow(forward.z, 2) + c[16] * Mathf.Pow(forward.y, 3) + c[17] * Mathf.Pow(forward.y, 2) * forward.z + c[18] * forward.y * Mathf.Pow(forward.z, 2) + c[19] * Mathf.Pow(forward.z, 3);
+        for (int i = 0; i < coefficientsTemp.Length; ++i)
+        {
+            c[i] = coefficientsTemp[i];
+        }
+    }
+
     private static float MAD(float g, float a_red) {
         float e8 = Mathf.Pow((float)Math.E, 8);
         float a_eff = 1 - (0.125f * Mathf.Log(e8 + a_red * (1 - e8)));
         return 0.25f * g + 0.25f * a_red + a_eff;
     }
 
-    private static Vector3? SimulatePath(System.Random random, float[] coefficients, Vector3 origin, Vector3 direction, Vector3 center, float g, float sigmaSRed) {
+    public static Vector3? SimulatePath(System.Random random, float[] coefficients, Vector3 origin, Vector3 direction, Vector3 center, float g, float sigmaSRed, float sigmaA, float distScale, Action<PathPoint> onInteraction) {
         direction = direction.normalized;
 
         float maxDist = float.MaxValue;
+
+        float throughput = 1.0f;
 
         for (int i = 0; i < 500; i++) {
             var (dist, inside) = PolySurface.RayMarch(coefficients, origin, direction, maxDist, center);
@@ -240,14 +338,6 @@ public class TestDataGenerator : MonoBehaviour
             if (!inside) {
                 // exited surface
                 return newPoint;
-
-                // @todo: refract
-                //var (_dist, _) = PolySurface.RayMarch(coefficients, origin, direction, 10.0f, center);
-                // currentPath.Add(point);
-                // currentPath.Add(new PathPoint{
-                //     position = origin + direction * 10,
-                // });
-                break;
             }
 
             // still inside, set random direction and maxDist
@@ -262,7 +352,8 @@ public class TestDataGenerator : MonoBehaviour
                 // Debug.Log($"rand: {rand}, cosAngle: {cosAngle}, theta: {theta}, d: {d}");
 
                 if (d == float.PositiveInfinity) {
-
+                    // do nothing
+                    //direction = direction;
                 } else if (d == float.NegativeInfinity) {
                     direction = -direction;
                 } else {
@@ -283,9 +374,22 @@ public class TestDataGenerator : MonoBehaviour
 
             // Debug.Log($"direction: {direction}");
 
-            maxDist = GetScatterDistance(random, sigmaSRed);
+            maxDist = GetScatterDistance(random, sigmaSRed) * distScale;
             point.direction = point.direction * Vector3.Dot(point.direction, direction * maxDist);
-            // currentPath.Add(point);
+
+            onInteraction?.Invoke(point);
+
+            float transmission = Mathf.Exp(-sigmaA * maxDist);
+
+            throughput = throughput * transmission;
+
+            // russian roulette
+            if (i > 5)
+            {
+                if ((float)random.NextDouble() > throughput)
+                    return null;
+                throughput = 1;
+            }
         }
 
         // reached max steps, ray counts as absorbed

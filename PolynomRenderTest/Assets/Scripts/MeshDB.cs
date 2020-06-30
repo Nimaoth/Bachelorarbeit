@@ -1,9 +1,13 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
+using MathNet.Numerics.LinearAlgebra.Complex.Solvers;
 using MathNet.Numerics.LinearAlgebra.Single;
 using UnityEngine;
 using UnityEngine.UI;
@@ -117,6 +121,10 @@ public class MeshDB : MonoBehaviour
     [SerializeField]
     [Range(0, 1)]
     private float weightFactor = 1.0f;
+
+    [SerializeField]
+    [Range(0, 1)]
+    private float distScale = 1.0f;
 
     [SerializeField]
     private Mesh[] objects;
@@ -257,9 +265,39 @@ public class MeshDB : MonoBehaviour
 
         if (ctrl && Input.GetMouseButtonDown(0)) {
             var point = camera.ScreenPointToRay(Input.mousePosition);
-            SimulatePath(point.origin, point.direction);
+            //SimulatePath(point.origin, point.direction);
 
+            var random = new System.Random();
 
+            currentPath.Clear();
+            currentPath.Add(new PathPoint
+            {
+                position = point.origin,
+                direction = point.direction
+            });
+
+            var exit = TestDataGenerator.SimulatePath(
+                random,
+                surface.Coefficients,
+                point.origin, point.direction,
+                surface.Center,
+                surface.g, surface.SigmaSReduced, surface.sigmaA,
+                distScale,
+                (p) => currentPath.Add(p));
+
+            if (exit != null)
+            {
+                currentPath.Add(new PathPoint
+                {
+                    position = exit.Value,
+                    direction = (exit.Value - currentPath.Last().position).normalized,
+                });
+
+                currentPath.Add(new PathPoint
+                {
+                    position = currentPath.Last().position + currentPath.Last().direction * 10,
+                });
+            }
         }
 
         for (int i = 0; i < currentPath.Count; i++) {
@@ -305,6 +343,67 @@ public class MeshDB : MonoBehaviour
         }
     }
 
+    public void GenerateMeshWithCoefficients()
+    {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
+        var mesh = currentPointCloud.mesh;
+        var vertices = mesh.vertices;
+        var uvs = mesh.uv;
+        var normals = mesh.normals;
+        var indices = mesh.triangles;
+
+        var builder = new StringBuilder();
+        builder.AppendLine("o " + mesh.name);
+
+        foreach (var v in vertices)
+            builder.AppendLine($"v {v.x} {v.y} {v.z}");
+        foreach (var v in normals)
+            builder.AppendLine($"vn {v.x} {v.y} {v.z}");
+        foreach (var v in uvs)
+            builder.AppendLine($"vt {v.x} {v.y}");
+
+        var random = new System.Random();
+        foreach (var v in vertices)
+        {
+            // calculate coefficients for random point on surfice
+            float[] coefficients = TestDataGenerator.CalculateCoefficients(
+                random,
+                currentPointCloud.vertices,
+                v,
+                1,
+                weightFactor,
+                weightScale,
+                maxVertexCount,
+                randomVertexCount,
+                randomVertexWeight,
+                largeCoefficientPenalty);
+
+            builder.Append($"vc");
+            foreach (float c in coefficients)
+                builder.Append(" " + c);
+            builder.AppendLine();
+        }
+
+        string format = "f {0}/{0}/{0}/{0} {1}/{1}/{1}/{1} {2}/{2}/{2}/{2}\n";
+        if (uvs.Length == 0)
+            format = "f {0}//{0}/{0} {1}//{1}/{1} {2}//{2}/{2}\n";
+        //string format = "f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}\n";
+        //if (uvs.Length == 0)
+        //    format = "f {0}//{0} {1}//{1} {2}//{2}\n";
+
+        for (int i = 0; i < indices.Length; i += 3)
+        {
+            int i0 = indices[i] + 1;
+            int i1 = indices[i + 1] + 1;
+            int i2 = indices[i + 2] + 1;
+
+            builder.AppendFormat(format, i0, i1, i2);
+        }
+
+        File.WriteAllText(mesh.name + ".obj", builder.ToString());
+    }
+
     public void SimulatePathRandomPath() {
         TestDataGenerator.GenerateTestData(
             currentPointCloud.mesh,
@@ -319,142 +418,10 @@ public class MeshDB : MonoBehaviour
             randomVertexSeed,
             dataSetSize,
             "",
+            distScale,
             progress => {
                 trainingProgress = progress;
             });
-
-        // get random point on surface + normal
-        // Vector3[] meshVertices = currentPointCloud.mesh.vertices;
-        // Vector3[] meshNormals = currentPointCloud.mesh.normals;
-        // int[] meshTriangleIndices = currentPointCloud.mesh.triangles;
-        // int randomTriangleIndex = UnityEngine.Random.Range(0, meshTriangleIndices.Length / 3) * 3;
-        
-        // var (b0, b1, b2) = TestDataGenerator.GetRandomBarycentric();
-        // Vector3 randomSurfacePoint =
-        //     b0 * meshVertices[meshTriangleIndices[randomTriangleIndex + 0]] +
-        //     b1 * meshVertices[meshTriangleIndices[randomTriangleIndex + 1]] +
-        //     b2 * meshVertices[meshTriangleIndices[randomTriangleIndex + 2]];
-        // Vector3 randomSurfacePointNormal =
-        //     b0 * meshNormals[meshTriangleIndices[randomTriangleIndex + 0]] +
-        //     b1 * meshNormals[meshTriangleIndices[randomTriangleIndex + 1]] +
-        //     b2 * meshNormals[meshTriangleIndices[randomTriangleIndex + 2]];
-        // randomSurfacePointNormal = randomSurfacePointNormal.normalized;
-
-        // Vector3 normalCSRight = GetPerpendicular(randomSurfacePointNormal);
-        // Vector3 normalCSUp = Vector3.Cross(randomSurfacePointNormal, normalCSRight);
-        // Vector3 randomNormalTemp = UnityEngine.Random.onUnitSphere;
-        // randomNormalTemp.z = Mathf.Abs(randomNormalTemp.z);
-        // randomNormalTemp = randomNormalTemp.x * normalCSRight + randomNormalTemp.y * normalCSUp + randomNormalTemp.z * randomSurfacePointNormal;
-
-        // Vector3 direction = -randomNormalTemp.normalized;
-        // Vector3 origin = randomSurfacePoint - direction * pathStartRadius;
-        // Debug.DrawLine(new Vector3(-pathStartRadius, 0, 0) + randomSurfacePoint, new Vector3(pathStartRadius, 0, 0) + randomSurfacePoint, Color.white, 1.5f);
-        // Debug.DrawLine(new Vector3(0, -pathStartRadius, 0) + randomSurfacePoint, new Vector3(0, pathStartRadius, 0) + randomSurfacePoint, Color.white, 1.5f);
-        // Debug.DrawLine(new Vector3(0, 0, -pathStartRadius) + randomSurfacePoint, new Vector3(0, 0, pathStartRadius) + randomSurfacePoint, Color.white, 1.5f);
-        // Debug.DrawLine(randomSurfacePoint, randomSurfacePoint + randomSurfacePointNormal * 10, Color.red, 1.5f);
-        // // Debug.DrawLine(randomSurfacePoint, randomSurfacePoint + direction * 10, Color.green, 1.5f);
-
-        // camera.transform.parent.position = randomSurfacePoint;
-
-        // meshCollider.sharedMesh = currentPointCloud.mesh;
-        // if (meshCollider.Raycast(new Ray(origin, direction), out var hit, float.MaxValue)) {
-        //     hitLocation.position = hit.point;
-        //     currentCenter = hit.point;
-        //     pointCloudMaterial.SetVector("center", hit.point);
-
-        //     coefficients = TestDataGenerator.CalculateCoefficients(
-        //         currentVertices,
-        //         currentCenter,
-        //         surface.StandardDeviation,
-        //         weightFactor,
-        //         weightScale,
-        //         maxVertexCount,
-        //         randomVertexCount,
-        //         randomVertexWeight,
-        //         largeCoefficientPenalty,
-        //         randomVertexSeed);
-        //     surface.SetCenter(currentCenter);
-        //     surface.SetCoefficients(coefficients);
-
-        //     SimulatePath(origin, direction);
-        // }
-    }
-
-    private void SimulatePath(Vector3 origin, Vector3 direction) {
-        currentPath.Clear();
-
-        direction = direction.normalized;
-
-        currentPath.Add(new PathPoint{
-            position = origin,
-            direction = direction
-        });
-
-        float maxDist = float.MaxValue;
-
-        for (int i = 0; i < 1500; i++) {
-            var (dist, inside) = PolySurface.RayMarch(surface.Coefficients, origin, direction, maxDist, surface.Center);
-            var newPoint = origin + direction * dist;
-            var point = new PathPoint{
-                position = newPoint,
-                direction = direction
-            };
-
-            var normal = PolySurface.GetNormalAt(surface.Coefficients, newPoint, surface.Center);
-            origin = newPoint - normal * PolySurface.SURF_DIST * 2;
-
-            if (!inside) {
-                // @todo: refract
-                var (_dist, _) = PolySurface.RayMarch(surface.Coefficients, origin, direction, 10.0f, surface.Center);
-                currentPath.Add(point);
-                currentPath.Add(new PathPoint{
-                    position = origin + direction * 10,
-                });
-                break;
-            }
-
-            var g = surface.g;
-            // g = Mathf.Clamp(Mathf.Lerp(-1, 1, surface.EvaluateAt(origin) / Temp + 1), -1, 1);
-
-            // still inside, set random direction and maxDist
-            if (g == 0) {
-                direction = UnityEngine.Random.onUnitSphere;
-            } else {
-                float rand = UnityEngine.Random.Range(0.0f, 1.0f);
-                float cosAngle = InvIntPhaseFunction(rand, g);
-                float theta = Mathf.Acos(cosAngle);
-                float d = 1 / Mathf.Tan(theta);
-
-                // Debug.Log($"rand: {rand}, cosAngle: {cosAngle}, theta: {theta}, d: {d}");
-
-                if (d == float.PositiveInfinity) {
-
-                } else if (d == float.NegativeInfinity) {
-                    direction = -direction;
-                } else {
-                    var right = GetPerpendicular(direction).normalized;
-                    var up = Vector3.Cross(right, direction).normalized;
-                    var uv = UnityEngine.Random.insideUnitCircle;
-
-                    point.uv = uv;
-                    point.right = right;
-                    point.up = up;
-
-                    // Debug.Log($"right: {right}, up: {up}, uv: {uv}");
-
-                    direction = uv.x * right + uv.y * up + d * direction;
-                    direction = direction.normalized;
-                }
-            }
-
-            // Debug.Log($"direction: {direction}");
-
-            // direction = UnityEngine.Random.onUnitSphere;
-            // maxDist = UnityEngine.Random.Range(PathMinDist, PathMaxDist);
-            maxDist = -Mathf.Log(UnityEngine.Random.Range(0.001f, 1)) / surface.sigmaS;
-            point.direction = point.direction * Vector3.Dot(point.direction, direction * maxDist);
-            currentPath.Add(point);
-        }
     }
 
     private void RecomputeCurrentPointCloud() {

@@ -14,7 +14,7 @@ public class PolySurface : MonoBehaviour
     public static float MAX_DIST = 500;
     public static float MAX_STEPS = 500;
     public static float SURF_DIST = 0.0001f;
-    public static float _StepSize = 0.1f;
+    public static float _StepSize = 0.01f;
 
     // surface/medium properties
 

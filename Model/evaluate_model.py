@@ -12,34 +12,54 @@ import numpy as np
 import json
 from datetime import datetime
 
-NAME = "test-2020-06-05--16-55-01"
+NAME = "test-2020-06-10--15-22-59"
 
-# load training data
-samples_json = open("train_data/samples_2020-5-18--16-25-28.json", "r")
-samples = json.load(samples_json)
+arr = np.array([1, 2, 3])
 
-# bring training data into right shape
-print("preprocessing input training data...")
-x_train1 = np.array([np.array(data['x_train']) for data in samples])
-x_train2 = np.array([np.array(data['y_train']) for data in samples])
-# print(x_train1)
-# print(x_train2)
-
-print("preprocessing output training data...")
-y_train1 = np.array([np.array([data['y_train']]) for data in samples])
-y_train2 = np.array([0.5 for data in samples])
-# print(y_train1)
-# print(y_train2)
-
+#load model
 vae = K.models.load_model("models/" + NAME)
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return json.JSONEncoder.default(self, obj)
 
-for i in range(0, 100):
-    result = vae.predict([x_train1[i:i+1], x_train2[i:i+1]])
-    print("expected: ", end="")
-    print(y_train1[i], end="")
-    print(", ", end="")
-    print(y_train2[i], end="")
-    print(", got: ", end="")
-    print(result)
+def save_weights(layers, name):
+    json_dump = json.dumps(layers.get_weights(), cls=NumpyEncoder)
+    with open("weights/" + NAME + "_" + name + ".json", "w") as file:
+        file.write(json_dump)
 
-print("===============")
+save_weights(vae.features, "features")
+save_weights(vae.absorbtion, "absorbtion")
+save_weights(vae.decoder, "decoder")
+
+# # load training data
+# samples_json = open("../train_data/samples_2020-6-9--15-31-56.json", "r")
+# samples = json.load(samples_json)
+
+
+# # bring training data into right shape
+# print("preprocessing input training data...")
+# x_train_features = np.array([np.array(data['features']) for data in samples])
+# x_train_out_pos = np.array([np.array(data['out_pos']) for data in samples])
+# # print(x_train_features)
+# # print(x_train_out_pos)
+
+# print("preprocessing output training data...")
+# y_train_out_pos = np.array([np.array([data['out_pos']]) for data in samples])
+# y_train_absorbtion = np.array([np.array([data['absorbtion']]) for data in samples])
+# # print(y_train_out_pos)
+# # print(y_train_absorbtion)
+
+# print(vae.decoder.get_weights())
+
+# # for i in range(0, 100):
+# #     result = vae.predict([x_train_features[i:i+1], x_train_out_pos[i:i+1]])
+# #     print("expected: ", end="")
+# #     print(y_train_out_pos[i], end="")
+# #     print(", ", end="")
+# #     print(y_train_absorbtion[i], end="")
+# #     print(", got: ", end="")
+# #     print(result)
+
+# # print("===============")

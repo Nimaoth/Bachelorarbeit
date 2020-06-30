@@ -65,7 +65,7 @@ Material:
     - _GlossyReflections: 1
     - _Metallic: 0
     - _Mode: 0
-    - _NormalLength: 0.1
+    - _NormalLength: 0.025
     - _OcclusionStrength: 1
     - _Parallax: 0.02
     - _SmoothnessTextureChannel: 0
@@ -73,7 +73,7 @@ Material:
     - _SrcBlend: 1
     - _UVSec: 0
     - _WeightFactor: 1
-    - _WeightScale: 5
+    - _WeightScale: 55
     - _ZWrite: 1
     m_Colors:
     - _Color: {r: 0, g: 0.04290104, b: 1, a: 0.5019608}
