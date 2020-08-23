@@ -1,4 +1,5 @@
 using System;
+using System.CodeDom;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -7,10 +8,25 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using MathNet.Numerics.LinearAlgebra.Complex.Solvers;
 using MathNet.Numerics.LinearAlgebra.Single;
+using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.UI;
+
+public enum SampleSource
+{
+    Generate,
+    Python,
+    Cpp
+}
+
+public struct MeshDBSample
+{
+    public Vector3 position;
+    public Vector3 gradient;
+}
 
 public struct Vertex {
     public const int SIZE_IN_BYTES = sizeof(float) * (3 + 3 + 1);
@@ -33,10 +49,10 @@ public struct Vertex {
 }
 
 public class PointCloud {
-    public Mesh mesh;
+    public MyMesh mesh;
     public Vertex[] vertices;
 
-    public PointCloud(Mesh mesh) {
+    public PointCloud(MyMesh mesh) {
         this.mesh = mesh;
     }
 }
@@ -48,6 +64,38 @@ public struct PathPoint {
     public Vector3? up;
     public Vector3 direction;
 }
+
+public class MyMesh
+{
+    public Vector3[] positions;
+    public Vector3[] normals;
+    public float[][] coefficients;
+    public int[] faces;
+
+    public Mesh mesh;
+
+    public MyMesh(Mesh mesh)
+    {
+        this.mesh = mesh;
+        positions = mesh.vertices;
+        normals = mesh.normals;
+        faces = mesh.GetIndices(0);
+        coefficients = null;
+    }
+
+    public MyMesh(Vector3[] positions, Vector3[] normals, float[][] coefficients, int[] faces)
+    {
+        mesh = new Mesh();
+
+        mesh.vertices = this.positions = positions;
+        mesh.normals = this.normals = normals;
+        this.faces = faces;
+        mesh.SetIndices(faces, MeshTopology.Triangles, 0);
+        this.coefficients = coefficients;
+    }
+}
+
+
 
 public class MeshDB : MonoBehaviour
 {
@@ -115,7 +163,7 @@ public class MeshDB : MonoBehaviour
     private float randomVertexWeight;
 
     [SerializeField]
-    [Range(1.0f, 100.0f)]
+    [Range(1.0f, 200.0f)]
     private float weightScale = 1.0f;
 
     [SerializeField]
@@ -134,7 +182,7 @@ public class MeshDB : MonoBehaviour
     private Thread thread;
     private Vertex[] currentVertices;
     private Vertex[] currentClosestPoints;
-    private Vector3 currentCenter;
+    private Vector3 currentCenter, currentNormal, currentDirection;
     private float[] coefficients;
 
     // point cloud visualization
@@ -155,19 +203,82 @@ public class MeshDB : MonoBehaviour
     public float pathStartRadius = 5.0f;
 
     public int dataSetSize = 100;
+    public int samplesPerPoint = 100;
 
     [Range(0, 1)]
     public float trainingProgress = 0.0f;
 
+    MyMesh LoadObj(string path)
+    {
+        var positions = new List<Vector3>();
+        var normals = new List<Vector3>();
+        var coefficients = new List<float[]>();
+        var faces = new List<int>();
+
+        foreach (string line in File.ReadLines(path))
+        {
+            if (line.StartsWith("v "))
+            {
+                var nums = line.Substring(2).Split(' ').Select(str => float.Parse(str)).ToArray();
+                positions.Add(new Vector3(nums[0], nums[1], nums[2]));
+            }
+            else if (line.StartsWith("vn "))
+            {
+                var nums = line.Substring(3).Split(' ').Select(str => float.Parse(str)).ToArray();
+                normals.Add(new Vector3(nums[0], nums[1], nums[2]));
+            }
+            else if (line.StartsWith("vc "))
+            {
+                var nums = line.Substring(3).Split(' ').Select(str => float.Parse(str)).ToArray();
+                coefficients.Add(nums);
+            }
+            else if (line.StartsWith("f "))
+            {
+                var indices = line.Substring(2).Split(' ').Select(str => int.Parse(str.Split('/')[0]) - 1).ToArray();
+                faces.AddRange(indices);
+            }
+        }
+
+        return new MyMesh(positions.ToArray(), normals.ToArray(), coefficients.ToArray(), faces.ToArray());
+    }
+
+    public string objFilePath = @"D:\New folder\bunny_c.obj";
+
+    public string samplesPath = "";
+    public string modelName = "";
+    public string modelVersion = "final";
+    public float modelStddev = 20.0f;
+    public bool incidentIsNormal = true;
+
+    public GameObject samplePointPrefab;
+    private List<GameObject> samples = new List<GameObject>();
+
+    public bool autoProjectSamples = false;
+    public bool renderPolySurface = true;
+    public SampleSource sampleSource = SampleSource.Generate;
+
     // methods
 
-    void Start() {
+    void Start()
+    {
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         meshCollider = GetComponent<MeshCollider>();
-        pointClouds = new PointCloud[objects.Length];
+        pointClouds = new PointCloud[objects.Length + 1];
+
+        pointClouds[0] = new PointCloud(LoadObj(objFilePath));
+        var button0 = GameObject.Instantiate(meshSelectorButtonPrefab, meshSelectorButtonList.transform);
+        button0.GetComponentInChildren<Text>().text = Path.GetFileName(objFilePath);
+        button0.GetComponent<Button>().onClick.AddListener(() => {
+            if (pointClouds[0].vertices == null)
+            {
+                ComputePoints(pointClouds[0]);
+            }
+            SetActivePointCloud(pointClouds[0]);
+        });
 
         for (int i = 0; i < objects.Length; i++) {
             var mesh = objects[i];
-            var pointCloud = pointClouds[i] = new PointCloud(mesh);
+            var pointCloud = pointClouds[i + 1] = new PointCloud(new MyMesh(mesh));
 
             var button = GameObject.Instantiate(meshSelectorButtonPrefab, meshSelectorButtonList.transform);
             button.GetComponentInChildren<Text>().text = mesh.name;
@@ -182,10 +293,12 @@ public class MeshDB : MonoBehaviour
         cbShowPointCloud.onValueChanged.AddListener(val => {
             showPointCloud = val;
         });
+        showPointCloud = cbShowPointCloud.isOn;
 
         cbShowMesh.onValueChanged.AddListener(val => {
             showMesh = val;
         });
+        showMesh = cbShowMesh.isOn;
 
         ifMinimumPointCount.onEndEdit.AddListener(val => {
             if (int.TryParse(val, out var min))
@@ -208,6 +321,9 @@ public class MeshDB : MonoBehaviour
         pointCloudBuffer = new ComputeBuffer(10000000, Vertex.SIZE_IN_BYTES);
         pointCloudMaterial.SetBuffer("pointCloud", pointCloudBuffer);
 
+        minimumPointCount = int.Parse(ifMinimumPointCount.text);
+        pointsPerAreaMultiplier = int.Parse(ifPointsPerArea.text);
+
         ComputePoints(pointClouds[0]);
         SetActivePointCloud(pointClouds[0]);
 
@@ -216,7 +332,14 @@ public class MeshDB : MonoBehaviour
     }
 
     void OnApplicationQuit() {
-        pointCloudBuffer.Release();
+        try
+        {
+            pointCloudBuffer?.Release();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError(e.ToString());
+        }
     }
 
     private void OnRenderObject() {
@@ -225,7 +348,7 @@ public class MeshDB : MonoBehaviour
 
         if (showMesh) {
             meshMaterial.SetPass(0);
-            Graphics.DrawMeshNow(currentPointCloud.mesh, Matrix4x4.identity);
+            Graphics.DrawMeshNow(currentPointCloud.mesh.mesh, Matrix4x4.identity);
             // Graphics.DrawMesh(currentPointCloud.mesh, Matrix4x4.identity, meshMaterial, 0);
         }
 
@@ -236,13 +359,211 @@ public class MeshDB : MonoBehaviour
         }
     }
 
-    private void Update() {
+    System.Random samplesRandom = new System.Random();
+    List<MeshDBSample> samplesTemp = new List<MeshDBSample>();
+    System.Diagnostics.Process process = null;
+
+    public void GetSamplesFromModelCurrentPos()
+    {
+        var dir = currentDirection;
+        if (incidentIsNormal)
+            dir = currentNormal;
+        GetSamplesFromModel(currentCenter, currentNormal, dir);
+    }
+
+    private void GetSamplesFromModel(Vector3 center, Vector3 normal, Vector3 direction)
+    {
+        Debug.Log("Start generator");
+        foreach (var go in samples)
+            GameObject.Destroy(go);
+        samples.Clear();
+
+        var coefficients = surface.Coefficients.ToArray();
+
+        var normalToZ = new Frame(normal);
+        var zToDirection = new Frame(-direction).Invert();
+        TestDataGenerator.RotatePolynomial(coefficients, normalToZ.x, normalToZ.y, normalToZ.z);
+
+        if (!incidentIsNormal)
+            TestDataGenerator.RotatePolynomial(coefficients, zToDirection.x, zToDirection.y, zToDirection.z);
+
+        string[] arguments = null;
+        string fileExe = null;
+
+        var model = string.IsNullOrWhiteSpace(modelVersion) ? $"{modelName}/final" : $"{modelName}/{modelVersion}";
+
+        switch (sampleSource)
+        {
+            case SampleSource.Cpp:
+                fileExe = @"D:\Bachelorarbeit\CppModelTest\x64\Release\CppModelTest.exe";
+                arguments = new string[]
+                {
+                            model,
+                            samplesToGenerate.ToString(),
+                            modelStddev.ToString(),
+                            $"{string.Join(",", coefficients)},{surface.alphaEff},{surface.g},{surface.ior}"
+                };
+                break;
+            case SampleSource.Python:
+                fileExe = "python.exe";
+                arguments = new string[]
+                {
+                            @"D:\Bachelorarbeit\Bachelorarbeit\Model\generate_samples.py",
+                            model,
+                            samplesToGenerate.ToString(),
+                            modelStddev.ToString(),
+                            $"{string.Join(",", coefficients)},{surface.alphaEff},{surface.g},{surface.ior}"
+                };
+                break;
+
+            default:
+                fileExe = @"D:\Bachelorarbeit\CppModelTest\x64\Release\CppModelTest.exe";
+                arguments = new string[]
+                {
+                            model,
+                            samplesToGenerate.ToString(),
+                            modelStddev.ToString(),
+                            $"{string.Join(",", coefficients)},{surface.alphaEff},{surface.g},{surface.ior}"
+                };
+                break;
+        }
+
+        var p = new System.Diagnostics.Process();
+        p.StartInfo.FileName = fileExe;
+        p.StartInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+        p.StartInfo.WorkingDirectory = @"D:\Bachelorarbeit\Bachelorarbeit\Model";
+        p.StartInfo.UseShellExecute = false;
+        p.StartInfo.CreateNoWindow = true;
+        p.StartInfo.RedirectStandardOutput = true;
+        p.StartInfo.Arguments = string.Join(" ", arguments.Select(a => $"\"{a}\""));
+
+        Debug.Log(p.StartInfo.Arguments);
+
+        var r = new System.Random();
+        p.OutputDataReceived += (sender, args) => {
+            if (args.Data != null && args.Data.StartsWith("# "))
+            {
+                var parts = args.Data.Substring(2).Split(',').Select(s => float.Parse(s)).ToArray();
+                var pos = new Vector3(parts[0], parts[1], parts[2]);
+                var n = PolySurface.GetNormalAt(coefficients, pos, Vector3.zero);
+
+                //pos = new Vector3(0, 0, (float)r.NextDouble());
+
+                if (!incidentIsNormal)
+                {
+                    pos = zToDirection.ToMatrix() * pos;
+                    n = zToDirection.ToMatrix() * n;
+                }
+                pos = normalToZ.ToMatrix() * pos;
+                n = normalToZ.ToMatrix() * n;
+
+                pos += center;
+
+                samplesTemp.Add(new MeshDBSample
+                {
+                    position = pos,
+                    gradient = n
+                });
+            }
+        };
+
+        p.Start();
+        p.BeginOutputReadLine();
+
+        process = p;
+    }
+
+    public int samplesToGenerate = 1000;
+
+
+    private int[] modelVersions = new int[] { 1, 2, 5, 10, 15, 20, 25 };
+    private int currentModelVersionIndex = 0;
+
+    private string[] modelNames = new string[] {
+        "",
+        "test-2020-08-04--19-09-47",
+        "test-2020-08-04--21-06-49",
+        "test-2020-08-05--15-44-24",
+        "test-2020-08-04--15-05-38",
+        "test-2020-08-04--16-45-37",
+        "test-2020-08-04--22-49-23",
+    };
+    private int currentModelIndex = 0;
+
+    public static void SaveVector(string name, Vector3 vec)
+    {
+        PlayerPrefs.SetFloat($"{name}_x", vec.x);
+        PlayerPrefs.SetFloat($"{name}_y", vec.y);
+        PlayerPrefs.SetFloat($"{name}_z", vec.z);
+    }
+    public static Vector3 LoadVector(string name)
+    {
+        return new Vector3(PlayerPrefs.GetFloat($"{name}_x"), PlayerPrefs.GetFloat($"{name}_y"), PlayerPrefs.GetFloat($"{name}_z"));
+    }
+
+    private void Update()
+    {
+
+        if (Input.GetKeyDown(KeyCode.F1))
+        {
+            SaveVector("currentCenter", currentCenter);
+            SaveVector("currentNormal", currentNormal);
+            PlayerPrefs.Save();
+        }
+        if (Input.GetKeyDown(KeyCode.F2))
+        {
+            currentCenter = LoadVector("currentCenter");
+            currentNormal = LoadVector("currentNormal");
+
+            hitLocation.transform.position = currentCenter;
+        }
+
+        if (Input.GetKeyDown(KeyCode.F4))
+        {
+            if (modelStddev == 1)
+                modelStddev = 20;
+            else
+                modelStddev = 1;
+        }
+
+        if (Input.GetKeyDown(KeyCode.F5))
+        {
+            foreach (var go in samples)
+                GameObject.Destroy(go);
+            samples.Clear();
+            GenerateSamples(samplesToGenerate);
+        }
+        if (Input.GetKeyDown(KeyCode.F6))
+        {
+            modelName = modelNames[currentModelIndex];
+            currentModelIndex = (currentModelIndex+ 1) % modelNames.Length;
+        }
+
+        if (Input.GetKeyDown(KeyCode.F7))
+        {
+            modelVersion = modelVersions[currentModelVersionIndex].ToString();
+            currentModelVersionIndex = (currentModelVersionIndex + 1) % modelVersions.Length;
+        }
+        if (Input.GetKeyDown(KeyCode.F8))
+        {
+            foreach (var go in samples)
+                GameObject.Destroy(go);
+            samples.Clear();
+            GetSamplesFromModelCurrentPos();
+        }
+
+        surface.renderer.enabled = renderPolySurface;
+
         var ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+        var shift = Input.GetKey(KeyCode.LeftShift);
             
         pointCloudMaterial.SetFloat("_WeightScale", weightScale);
         pointCloudMaterial.SetFloat("_WeightFactor", weightFactor);
 
-        if (currentPointCloud != null) {
+        if (currentPointCloud != null)
+        {
+            currentVertices = currentPointCloud.vertices;
+
             if (ctrl && Input.GetMouseButtonDown(1)) {
                 var ray = camera.ScreenPointToRay(Input.mousePosition);
                 if (Physics.Raycast(ray, out var hit)) {
@@ -253,19 +574,43 @@ public class MeshDB : MonoBehaviour
             }
             if (!ctrl && Input.GetMouseButton(1)) {
                 var ray = camera.ScreenPointToRay(Input.mousePosition);
-                meshCollider.sharedMesh = currentPointCloud.mesh;
+                meshCollider.sharedMesh = currentPointCloud.mesh.mesh;
                 if (meshCollider.Raycast(ray, out var hit, float.MaxValue)) {
+                    //Debug.Log($"({ray.origin.x}, {ray.origin.y}, {ray.origin.z}), ({ray.direction.x}, {ray.direction.y}, {ray.direction.z})");
                     hitLocation.position = hit.point;
                     currentCenter = hit.point;
+                    currentNormal = hit.normal;
                     currentVertices = currentPointCloud.vertices;
                     pointCloudMaterial.SetVector("center", hit.point);
+
+                    //
+                    if (currentPointCloud.mesh.coefficients != null)
+                    {
+                        var uvw = hit.barycentricCoordinate;
+
+                        var coefficientsArray = currentPointCloud.mesh.coefficients;
+                        var faces = currentPointCloud.mesh.faces;
+
+                        float[] c0 = coefficientsArray[faces[hit.triangleIndex * 3 + 0]];
+                        float[] c1 = coefficientsArray[faces[hit.triangleIndex * 3 + 1]];
+                        float[] c2 = coefficientsArray[faces[hit.triangleIndex * 3 + 2]];
+
+                        float[] coefficients = new float[20];
+                        for (int i = 0; i < 20; i++)
+                        {
+                            coefficients[i] = uvw.x * c0[i] + uvw.y * c1[i] + uvw.z * c2[i];
+                        }
+
+                        surface.SetCenter(currentCenter);
+                        surface.SetCoefficients(coefficients);
+                    }
                 }
             }
+            
         }
 
         if (ctrl && Input.GetMouseButtonDown(0)) {
             var point = camera.ScreenPointToRay(Input.mousePosition);
-            //SimulatePath(point.origin, point.direction);
 
             var random = new System.Random();
 
@@ -276,14 +621,20 @@ public class MeshDB : MonoBehaviour
                 direction = point.direction
             });
 
+
+            var (dist, _) = PolySurface.RayMarch(coefficients, point.origin, point.direction, 1000.0f, surface.Center);
+            var hit = point.origin + (dist + 0.001f) * point.direction;
+
+            int stepCount = 0;
             var exit = TestDataGenerator.SimulatePath(
                 random,
                 surface.Coefficients,
-                point.origin, point.direction,
+                hit, point.direction,
                 surface.Center,
-                surface.g, surface.SigmaSReduced, surface.sigmaA,
+                surface.g, surface.SigmaSReduced, surface.sigmaT,
                 distScale,
-                (p) => currentPath.Add(p));
+                (p) => currentPath.Add(p),
+                ref stepCount);
 
             if (exit != null)
             {
@@ -298,6 +649,48 @@ public class MeshDB : MonoBehaviour
                     position = currentPath.Last().position + currentPath.Last().direction * 10,
                 });
             }
+        }
+
+        if (process != null && process.HasExited)
+        {
+            Debug.Log("generator done");
+
+            foreach (var go in samples)
+                GameObject.Destroy(go);
+            samples.Clear();
+
+            foreach (var sample in samplesTemp)
+            {
+                var go = GameObject.Instantiate(samplePointPrefab, transform);
+                go.transform.position = sample.position;
+                samples.Add(go);
+            }
+            samplesTemp.Clear();
+            process = null;
+        }
+
+        // generate samples
+        if (shift && Input.GetMouseButtonDown(0))
+        {
+            foreach (var go in samples)
+                GameObject.Destroy(go);
+            samples.Clear();
+            if (sampleSource != SampleSource.Generate && process == null)
+            {
+                var ray = camera.ScreenPointToRay(Input.mousePosition);
+                if (meshCollider.Raycast(ray, out var hit, float.MaxValue))
+                {
+                    var dir = ray.direction;
+                    if (incidentIsNormal)
+                        dir = -hit.normal;
+                    GetSamplesFromModel(hit.point, hit.normal, dir);
+                }
+            }
+        }
+        if (shift && Input.GetMouseButton(0))
+        {
+            if (sampleSource == SampleSource.Generate)
+                GenerateSamples();
         }
 
         for (int i = 0; i < currentPath.Count; i++) {
@@ -326,6 +719,104 @@ public class MeshDB : MonoBehaviour
             }
         }
     }
+    
+    public void LoadSamplesFromFile()
+    {
+        //currentVertices = null;
+
+        //using (var file = File.OpenRead($"../train_data/{samplesPath}.json"))
+        //{
+        //    JsonSerializer serializer = new JsonSerializer();
+        //    var reader = new JsonTextReader(new StreamReader(new BufferedStream(file)));
+        //    List<Sample> samples = serializer.Deserialize<List<Sample>>(reader);
+
+        //    var s0 = samples[0];
+        //    var normalToZ = new Frame(s0.normal.ToVector3()).Invert();
+        //    var coefficients = s0.features.Take(20).ToArray();
+        //    TestDataGenerator.RotatePolynomial(coefficients, normalToZ.x, normalToZ.y, normalToZ.z);
+
+        //    currentCenter = s0.point.ToVector3();
+        //    currentNormal = s0.normal.ToVector3();
+        //    surface.SetCoefficients(coefficients);
+        //    surface.SetCenter(currentCenter);
+        //    hitLocation.position = currentCenter;
+
+
+                //foreach (var go in samples)
+                //    GameObject.Destroy(go);
+        //    this.samples.Clear();
+        //    foreach (var s in samples.Take(Math.Min(100, samples.Count)))
+        //    {
+        //        var pos = new Vector3(s.out_pos[0], s.out_pos[1], s.out_pos[2]);
+        //        pos = normalToZ.Invert().ToMatrix() * pos;
+        //        pos += s.point.ToVector3();
+
+        //        this.samples.Add(new MeshDBSample
+        //        {
+        //            position = pos,
+        //            gradient = currentNormal,
+        //        });
+        //    }
+        //}
+    }
+
+    private void GenerateSamples(int amount = 10)
+    {
+        meshCollider.sharedMesh = currentPointCloud.mesh.mesh;
+
+        var camRay = camera.ScreenPointToRay(Input.mousePosition);
+        var dir = camRay.direction;
+
+        var (dist, _) = PolySurface.RayMarch(coefficients, camRay.origin, dir, 1000.0f, surface.Center);
+        var hit = camRay.origin + (dist + 0.001f) * camRay.direction;
+
+        hit = currentCenter - currentNormal * 0.001f;
+        dir = -currentNormal;
+
+        int count = 0;
+        while (count < amount)
+        {
+            int stepCount = 0;
+            var exit = TestDataGenerator.SimulatePath(
+                samplesRandom,
+                surface.Coefficients,
+                hit, dir,
+                surface.Center,
+                surface.g, surface.SigmaSReduced, surface.sigmaT,
+                distScale,
+                null,
+                ref stepCount);
+
+            if (exit != null)
+            {
+                count += 1;
+                var ray = new Ray(exit.Value, -PolySurface.GetNormalAt(surface.Coefficients, exit.Value, surface.Center));
+                if (autoProjectSamples && meshCollider.Raycast(ray, out var h, float.MaxValue))
+                {
+                    var go = GameObject.Instantiate(samplePointPrefab, transform);
+                    go.transform.position = h.point;
+                    samples.Add(go);
+
+                    //samples.Add(new MeshDBSample
+                    //{
+                    //    position = h.point,
+                    //    gradient = -ray.direction,
+                    //});
+                }
+                else
+                {
+                    var go = GameObject.Instantiate(samplePointPrefab, transform);
+                    go.transform.position = exit.Value;
+                    samples.Add(go);
+                    //samples.Add(new MeshDBSample
+                    //{
+                    //    position = exit.Value,
+                    //    gradient = -ray.direction
+                    //});
+                }
+            }
+        }
+    }
 
     private float InvIntPhaseFunction(float x, float g) {
         float g2 = g * g;
@@ -347,9 +838,8 @@ public class MeshDB : MonoBehaviour
     {
         CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-        var mesh = currentPointCloud.mesh;
+        var mesh = currentPointCloud.mesh.mesh;
         var vertices = mesh.vertices;
-        var uvs = mesh.uv;
         var normals = mesh.normals;
         var indices = mesh.triangles;
 
@@ -360,37 +850,55 @@ public class MeshDB : MonoBehaviour
             builder.AppendLine($"v {v.x} {v.y} {v.z}");
         foreach (var v in normals)
             builder.AppendLine($"vn {v.x} {v.y} {v.z}");
-        foreach (var v in uvs)
-            builder.AppendLine($"vt {v.x} {v.y}");
 
-        var random = new System.Random();
-        foreach (var v in vertices)
+        var stopwatch = new System.Diagnostics.Stopwatch();
+        stopwatch.Start();
+        foreach (var coefficients in vertices.AsParallel().AsOrdered().Select(v => TestDataGenerator.CalculateCoefficients(
+            new System.Random(42069),
+            currentPointCloud.vertices,
+            v,
+            1,
+            weightFactor,
+            weightScale,
+            maxVertexCount,
+            randomVertexCount,
+            randomVertexWeight,
+            largeCoefficientPenalty)).AsSequential())
         {
-            // calculate coefficients for random point on surfice
-            float[] coefficients = TestDataGenerator.CalculateCoefficients(
-                random,
-                currentPointCloud.vertices,
-                v,
-                1,
-                weightFactor,
-                weightScale,
-                maxVertexCount,
-                randomVertexCount,
-                randomVertexWeight,
-                largeCoefficientPenalty);
-
             builder.Append($"vc");
             foreach (float c in coefficients)
                 builder.Append(" " + c);
             builder.AppendLine();
         }
+        stopwatch.Stop();
+        Debug.Log("Parallel loop: " + stopwatch.Elapsed);
 
-        string format = "f {0}/{0}/{0}/{0} {1}/{1}/{1}/{1} {2}/{2}/{2}/{2}\n";
-        if (uvs.Length == 0)
-            format = "f {0}//{0}/{0} {1}//{1}/{1} {2}//{2}/{2}\n";
-        //string format = "f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}\n";
-        //if (uvs.Length == 0)
-        //    format = "f {0}//{0} {1}//{1} {2}//{2}\n";
+        //stopwatch.Restart();
+        //var random = new System.Random();
+        //foreach (var v in vertices)
+        //{
+        //    // calculate coefficients for random point on surfice
+        //    float[] coefficients = TestDataGenerator.CalculateCoefficients(
+        //        random,
+        //        currentPointCloud.vertices,
+        //        v,
+        //        1,
+        //        weightFactor,
+        //        weightScale,
+        //        maxVertexCount,
+        //        randomVertexCount,
+        //        randomVertexWeight,
+        //        largeCoefficientPenalty);
+
+        //    builder.Append($"vc");
+        //    foreach (float c in coefficients)
+        //        builder.Append(" " + c);
+        //    builder.AppendLine();
+        //}
+        //stopwatch.Stop();
+        //Debug.Log("Serial loop: " + stopwatch.Elapsed);
+
+        string format = "f {0}//{0}/{0} {1}//{1}/{1} {2}//{2}/{2}\n";
 
         for (int i = 0; i < indices.Length; i += 3)
         {
@@ -402,11 +910,12 @@ public class MeshDB : MonoBehaviour
         }
 
         File.WriteAllText(mesh.name + ".obj", builder.ToString());
+        Debug.Log("Saving mesh done");
     }
 
     public void SimulatePathRandomPath() {
         TestDataGenerator.GenerateTestData(
-            currentPointCloud.mesh,
+            currentPointCloud.mesh.mesh,
             minimumPointCount,
             pointsPerAreaMultiplier,
             weightFactor,
@@ -419,6 +928,7 @@ public class MeshDB : MonoBehaviour
             dataSetSize,
             "",
             distScale,
+            samplesPerPoint,
             progress => {
                 trainingProgress = progress;
             });
@@ -439,7 +949,7 @@ public class MeshDB : MonoBehaviour
 
     private void ComputePoints(PointCloud pointCloud) {
         var random = new System.Random(randomVertexSeed);
-        pointCloud.vertices = TestDataGenerator.ComputePointCloud(random, pointCloud.mesh.vertices, pointCloud.mesh.normals, pointCloud.mesh.triangles, minimumPointCount, pointsPerAreaMultiplier, surface.StandardDeviation);
+        pointCloud.vertices = TestDataGenerator.ComputePointCloud(random, pointCloud.mesh.mesh.vertices, pointCloud.mesh.normals, pointCloud.mesh.mesh.triangles, minimumPointCount, pointsPerAreaMultiplier, surface.StandardDeviation);
     }
 
     private void SetActivePointCloud(PointCloud pc) {
@@ -456,11 +966,12 @@ public class MeshDB : MonoBehaviour
         int msPerFrame = 1000 / targetFPS;
 
         var watch = new System.Diagnostics.Stopwatch();
-        var random = new System.Random(randomVertexSeed);
 
         while (true) {
             watch.Restart();
-            if (currentVertices?.Length > 0) {
+            if (currentVertices?.Length > 0 && currentPointCloud.mesh.coefficients == null)
+            {
+                var random = new System.Random(randomVertexSeed);
                 coefficients = TestDataGenerator.CalculateCoefficients(
                     random,
                     currentVertices,
@@ -478,6 +989,46 @@ public class MeshDB : MonoBehaviour
             var time = watch.Elapsed;
             if (time.Milliseconds < msPerFrame)
                 Thread.Sleep(msPerFrame - time.Milliseconds);
+        }
+    }
+
+
+    public void ProjectSamplesOnSurface()
+    {
+        //if (samples != null)
+        //{
+        //    meshCollider.sharedMesh = currentPointCloud.mesh.mesh;
+        //    samples = samples.Select(s =>
+        //    {
+        //        var ray = new Ray(s.transform.position, -s.gradient);
+        //        if (meshCollider.Raycast(ray, out var hit, float.MaxValue))
+        //        {
+        //            return new MeshDBSample
+        //            {
+        //                position = hit.point,
+        //                gradient = s.gradient,
+        //            };
+        //        }
+        //        else
+        //        {
+        //            return s;
+        //        }
+        //    }).ToList();
+        //}
+    }
+
+    private void OnDrawGizmos()
+    {
+        if (samples != null)
+        {
+            var c = Gizmos.color;
+            Gizmos.color = new Color(1, 0, 1, 0.5f);
+            foreach (var sample in samples)
+            {
+                Gizmos.DrawSphere(sample.transform.position, 0.001f);
+                //Gizmos.DrawRay(sample.position, sample.gradient * 0.005f);
+            }
+            Gizmos.color = c;
         }
     }
 }

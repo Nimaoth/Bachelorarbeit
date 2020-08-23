@@ -37,7 +37,25 @@ public class CameraController : MonoBehaviour
 
     void Update()
     {
-        var ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+        if (Input.GetKeyDown(KeyCode.F1))
+        {
+            PlayerPrefs.SetFloat("distance", distance);
+            PlayerPrefs.SetFloat("pitch", pitch);
+            PlayerPrefs.SetFloat("yaw", yaw);
+            PlayerPrefs.SetFloat("cam_x", transform.position.x);
+            PlayerPrefs.SetFloat("cam_y", transform.position.y);
+            PlayerPrefs.SetFloat("cam_z", transform.position.z);
+            PlayerPrefs.Save();
+        }
+        if (Input.GetKeyDown(KeyCode.F2))
+        {
+            distance = PlayerPrefs.GetFloat("distance");
+            pitch = PlayerPrefs.GetFloat("pitch");
+            yaw = PlayerPrefs.GetFloat("yaw");
+            transform.position = new Vector3(PlayerPrefs.GetFloat("cam_x"), PlayerPrefs.GetFloat("cam_y"), PlayerPrefs.GetFloat("cam_z"));
+        }
+
+        var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
         var mouseScroll = Input.mouseScrollDelta;
         var mousePos = new Vector2(Input.mousePosition.x, Input.mousePosition.y);
         var mouseMove = mousePos - lastMousePos;
@@ -48,14 +66,14 @@ public class CameraController : MonoBehaviour
         if (Input.GetMouseButtonDown(1) || Input.GetMouseButtonDown(2))
             mouseMove *= 0;
 
-        if (ctrl && Input.GetMouseButton(2)) {
+        if (shift && Input.GetMouseButton(2)) {
             Vector3 move = Vector3.zero;
             move -= camera.transform.up * mouseMove.y * panSpeed * distance * 0.005f;
             move -= camera.transform.right * mouseMove.x * panSpeed * distance * 0.005f;
             transform.position += move;
         }
 
-        if (!ctrl && Input.GetMouseButton(2)) {
+        if (!shift && Input.GetMouseButton(2)) {
             yaw += mouseMove.x * mouseSensitivity;
             pitch = Mathf.Clamp(pitch - mouseMove.y * mouseSensitivity, -89, 89);
         }

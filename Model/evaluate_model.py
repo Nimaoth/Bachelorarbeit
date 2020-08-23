@@ -12,7 +12,7 @@ import numpy as np
 import json
 from datetime import datetime
 
-NAME = "test-2020-06-10--15-22-59"
+NAME = "test-2020-07-04--18-10-52"
 
 arr = np.array([1, 2, 3])
 

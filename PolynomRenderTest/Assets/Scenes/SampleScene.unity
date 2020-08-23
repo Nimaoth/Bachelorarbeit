@@ -38,7 +38,7 @@ RenderSettings:
   m_ReflectionIntensity: 1
   m_CustomReflection: {fileID: 0}
   m_Sun: {fileID: 705507994}
-  m_IndirectSpecularColor: {r: 0.44657898, g: 0.4964133, b: 0.5748178, a: 1}
+  m_IndirectSpecularColor: {r: 0.4467978, g: 0.49666655, b: 0.57494825, a: 1}
   m_UseRadianceAmbientProbe: 0
 --- !u!157 &3
 LightmapSettings:
@@ -297,7 +297,7 @@ MonoBehaviour:
   m_CaretColor: {r: 0.19607843, g: 0.19607843, b: 0.19607843, a: 1}
   m_CustomCaretColor: 0
   m_SelectionColor: {r: 0.65882355, g: 0.80784315, b: 1, a: 0.7529412}
-  m_Text: 1024
+  m_Text: 30000
   m_CaretBlinkRate: 0.85
   m_CaretWidth: 1
   m_ReadOnly: 0
@@ -545,11 +545,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   rotationT: {fileID: 1957256080}
-  g: 0.9
+  g: 0.7
   ior: 1
-  sigmaS: 0.5
-  sigmaA: 0.5
-  sigmaT: 0.5
+  sigmaS: 30
+  sigmaA: 1
+  sigmaT: 31
   sigmaSred: 0
   sigmaTred: 0
   alphaRed: 0
@@ -557,6 +557,7 @@ MonoBehaviour:
   mad: 0
   standardDeviation: 0
   camera: {fileID: 963194227}
+  renderer: {fileID: 347090054}
   material: {fileID: 2100000, guid: 244c2a75c1bbb3f479e8881efd5e40a6, type: 2}
   coefficients:
   - 1
@@ -1201,7 +1202,7 @@ Light:
   serializedVersion: 10
   m_Type: 1
   m_Shape: 0
-  m_Color: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
+  m_Color: {r: 0.589, g: 0.589, b: 0.589, a: 1}
   m_Intensity: 1
   m_Range: 10
   m_SpotAngle: 30
@@ -1247,7 +1248,7 @@ Light:
   m_BounceIntensity: 1
   m_ColorTemperature: 6570
   m_UseColorTemperature: 0
-  m_BoundingSphereOverride: {x: 0, y: 0, z: 0, w: 0}
+  m_BoundingSphereOverride: {x: NaN, y: 0, z: 0, w: -5.268323e+32}
   m_UseBoundingSphereOverride: 0
   m_ShadowRadius: 0
   m_ShadowAngle: 0
@@ -1258,13 +1259,13 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 705507993}
-  m_LocalRotation: {x: 0.40821788, y: -0.23456968, z: 0.10938163, w: 0.8754261}
+  m_LocalRotation: {x: 0.40329692, y: -0.23518004, z: 0.10806306, w: 0.877704}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 2
-  m_LocalEulerAnglesHint: {x: 50, y: -30, z: 0}
+  m_LocalEulerAnglesHint: {x: 49.357002, y: -30.000002, z: 0}
 --- !u!1 &824428695
 GameObject:
   m_ObjectHideFlags: 0
@@ -1452,6 +1453,7 @@ GameObject:
   - component: {fileID: 963194228}
   - component: {fileID: 963194227}
   - component: {fileID: 963194226}
+  - component: {fileID: 963194229}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -1477,7 +1479,7 @@ Camera:
   m_Enabled: 1
   serializedVersion: 2
   m_ClearFlags: 2
-  m_BackGroundColor: {r: 0, g: 0, b: 0, a: 0}
+  m_BackGroundColor: {r: 1, g: 1, b: 1, a: 0}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
   m_FOVAxisMode: 0
@@ -1524,6 +1526,18 @@ Transform:
   m_Father: {fileID: 1439801182}
   m_RootOrder: 0
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &963194229
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 963194225}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5e1f59237ecbc0b49b667104fb8bf5ab, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &1050598531
 GameObject:
   m_ObjectHideFlags: 0
@@ -1834,7 +1848,7 @@ MonoBehaviour:
   onValueChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_IsOn: 1
+  m_IsOn: 0
 --- !u!1 &1439801181
 GameObject:
   m_ObjectHideFlags: 0
@@ -2228,25 +2242,25 @@ MonoBehaviour:
   cbShowMesh: {fileID: 1531152880}
   hitLocation: {fileID: 1802451333}
   surface: {fileID: 347090053}
-  largeCoefficientPenalty: 0.0001
-  maxVertexCount: 1000
+  largeCoefficientPenalty: 0.001
+  maxVertexCount: 500
   randomVertexSeed: 123456789
-  randomVertexCount: 0
+  randomVertexCount: 5
   randomVertexWeight: 0.001
-  weightScale: 55
+  weightScale: 125
   weightFactor: 1
-  distScale: 0.001
+  distScale: 0.1
   objects:
-  - {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
-  - {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
-  - {fileID: 10208, guid: 0000000000000000e000000000000000, type: 0}
-  - {fileID: 10206, guid: 0000000000000000e000000000000000, type: 0}
-  - {fileID: -8803937527578110353, guid: 7137b3368fa1a3146b682b66bbb74d05, type: 3}
-  - {fileID: -2222346464153789849, guid: b8a199947777ed344804a94a5efcd542, type: 3}
-  - {fileID: -3806788926558154064, guid: 895dc46fa42e899479816e86106951e2, type: 3}
-  - {fileID: -2432090755550338912, guid: 0114726f3eec95448b4ed3b9a686766c, type: 3}
-  - {fileID: -3549594798826422760, guid: 298dce5da924a33408b8883a8d9b02be, type: 3}
-  - {fileID: -2432090755550338912, guid: f5bccb18cb96d8d4e9443e75a65dada4, type: 3}
+  - {fileID: -2432090755550338912, guid: f4652cdd1c16dc4448d26b629c4b84a0, type: 3}
+  - {fileID: -2432090755550338912, guid: bfada9232ff384741b765294b3851c54, type: 3}
+  - {fileID: -2432090755550338912, guid: 4724fc2d78d0451458a00bf01cabf457, type: 3}
+  - {fileID: -2432090755550338912, guid: fb6cdeb2d64f4174ca9b21896603a138, type: 3}
+  - {fileID: -2432090755550338912, guid: 763300ce39183bf41bdc601c780df0ad, type: 3}
+  - {fileID: -2432090755550338912, guid: 1b7ea383ae2460a41af6df22fb9c6d93, type: 3}
+  - {fileID: -2432090755550338912, guid: 209a0016e2ece1146bd612ba8e72f43a, type: 3}
+  - {fileID: -2432090755550338912, guid: 489c5279cd177594ca1d859896d40c39, type: 3}
+  - {fileID: -2432090755550338912, guid: fc53b8964b932fc41aa0788b2543429f, type: 3}
+  - {fileID: -2432090755550338912, guid: 763300ce39183bf41bdc601c780df0ad, type: 3}
   - {fileID: -2432090755550338912, guid: 01996fb1623b4a04d9e3ce980cfb2d26, type: 3}
   - {fileID: -2432090755550338912, guid: e5fc54ab2004ba441b82b77a564511ef, type: 3}
   - {fileID: -2432090755550338912, guid: 751d9d1555895004cad89d95053a833f, type: 3}
@@ -2258,8 +2272,21 @@ MonoBehaviour:
   RenderPathAxis: 0
   RenderPath: 1
   pathStartRadius: 0.5
-  dataSetSize: 1000
+  dataSetSize: 10000
+  samplesPerPoint: 100
   trainingProgress: 0
+  objFilePath: D:\Bachelorarbeit\Bachelorarbeit\PolynomRenderTest\default.obj
+  samplesPath: 
+  modelName: test-2020-08-04--19-09-47
+  modelVersion: 5
+  modelStddev: 1
+  incidentIsNormal: 1
+  samplePointPrefab: {fileID: 1821070395970768770, guid: 423de5273661f094e9365c9e0f71e86f,
+    type: 3}
+  autoProjectSamples: 0
+  renderPolySurface: 1
+  sampleSource: 0
+  samplesToGenerate: 500
 --- !u!4 &1543204579
 Transform:
   m_ObjectHideFlags: 0
@@ -2909,7 +2936,7 @@ Transform:
   m_GameObject: {fileID: 1802451329}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 0.003010305, y: 0.003010305, z: 0.003010305}
+  m_LocalScale: {x: 0.01, y: 0.01, z: 0.01}
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 1
@@ -3416,7 +3443,7 @@ MonoBehaviour:
     m_HorizontalOverflow: 1
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: 1024
+  m_Text: 30000
 --- !u!222 &2099067671
 CanvasRenderer:
   m_ObjectHideFlags: 0
@@ -3582,7 +3609,7 @@ Light:
   serializedVersion: 10
   m_Type: 1
   m_Shape: 0
-  m_Color: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
+  m_Color: {r: 0.468, g: 0.44781175, b: 0.39275295, a: 1}
   m_Intensity: 1
   m_Range: 10
   m_SpotAngle: 30
@@ -3628,7 +3655,7 @@ Light:
   m_BounceIntensity: 1
   m_ColorTemperature: 6570
   m_UseColorTemperature: 0
-  m_BoundingSphereOverride: {x: 5.68e-43, y: 33, z: 12, w: 0}
+  m_BoundingSphereOverride: {x: 0, y: 7.612e-42, z: 0, w: 0}
   m_UseBoundingSphereOverride: 0
   m_ShadowRadius: 0
   m_ShadowAngle: 0
@@ -3639,10 +3666,10 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 2116617279}
-  m_LocalRotation: {x: -0.10938187, y: 0.8754263, z: 0.40821785, w: 0.2345692}
+  m_LocalRotation: {x: -0.4389, y: 0.7429722, z: -0.04173031, w: -0.5036046}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 3
-  m_LocalEulerAnglesHint: {x: -50.000004, y: 150, z: 0}
+  m_LocalEulerAnglesHint: {x: 30.270002, y: 235.492, z: -44.948}

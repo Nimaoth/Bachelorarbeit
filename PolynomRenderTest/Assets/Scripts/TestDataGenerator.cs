@@ -16,9 +16,9 @@ using System.Dynamic;
 [Serializable]
 public struct vec3
 {
-    public float x, y, z;
+    public double x, y, z;
 
-    public vec3(float x, float y, float z)
+    public vec3(double x, double y, double z)
     {
         this.x = x;
         this.y = y;
@@ -31,6 +31,11 @@ public struct vec3
         this.y = v.y;
         this.z = v.z;
     }
+
+    internal Vector3 ToVector3()
+    {
+        return new Vector3((float)x, (float)y, (float)z);
+    }
 }
 
 [Serializable]
@@ -38,7 +43,9 @@ public struct Sample {
     public float[] features;
     public float[] out_pos;
     public float absorbtion;
-    //public vec3 entryPoint;
+
+    public vec3 point;
+    public vec3 normal;
     //public vec3 exitPoint;
     //public float[] coefficients;
     //public float sigmaS;
@@ -48,12 +55,59 @@ public struct Sample {
     //public float ior;
 }
 
+public struct Frame
+{
+    public Vector3 x, y, z;
+
+    public Frame(Vector3 x, Vector3 y, Vector3 z)
+    {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
+
+    public Frame(Vector3 z)
+    {
+        this.x = GetPerpendicular(z);
+        this.y = Vector3.Cross(z, x);
+        this.z = z;
+    }
+
+    public Frame Invert() => new Frame(
+        new Vector3(x.x, y.x, z.x),
+        new Vector3(x.y, y.y, z.y),
+        new Vector3(x.z, y.z, z.z));
+
+    public Matrix4x4 ToMatrix() => new Matrix4x4(Vec3To4(x, 0), Vec3To4(y, 0), Vec3To4(z, 0), new Vector4(0, 0, 0, 1));
+
+    private static Vector4 Vec3To4(Vector3 v, float w) => new Vector4(v.x, v.y, v.z, w);
+    private static Vector3 GetPerpendicular(Vector3 p)
+    {
+        var t = new Vector3(p.z, p.z, -p.x - p.y);
+        if (t.sqrMagnitude < 0.01f)
+            return new Vector3(-p.y - p.z, p.x, p.x).normalized;
+        else
+            return t.normalized;
+    }
+}
 public struct AvgStats
 {
     public double effectiveAlbedo;
     public double g;
     public double ior;
     public vec3 pos;
+    public double steps;
+
+    internal void ComputeAvg(double sampleCount)
+    {
+        effectiveAlbedo /= sampleCount;
+        g /= sampleCount;
+        ior /= sampleCount;
+        pos.x /= sampleCount;
+        pos.y /= sampleCount;
+        pos.z /= sampleCount;
+        steps /= sampleCount;
+    }
 }
 
 public class TestDataGenerator : MonoBehaviour
@@ -78,6 +132,7 @@ public class TestDataGenerator : MonoBehaviour
             int sampleCount,
             string outputPath,
             float distScale,
+            int samplesPerPoint,
             Action<float> callback) {
 
         if (trainThread != null)
@@ -98,21 +153,19 @@ public class TestDataGenerator : MonoBehaviour
         int[] meshTriangleIndices = mesh.triangles;
 
         // generate point cloud
-        var random = new System.Random(randomVertexSeed);
+        var random = new System.Random();
         var pointCloud = ComputePointCloud(random, meshVertices, meshNormals, meshTriangleIndices, minimumPointCount, pointsPerAreaMultiplier, 0.1f);
 
         trainThread = new Thread(() =>
         {
             stopwatch.Restart();
 
-            var samples = new List<Sample>(sampleCount);
+            var samples = new List<Sample>(sampleCount * samplesPerPoint);
+            var samplesTemp = new List<Vector3>(samplesPerPoint);
 
-            double effectiveAlbedoAvg = 0.0;
-            double gAvg = 0.0;
-            double iorAvg = 0.0;
-            Vector3 posAvg = Vector3.zero;
+            AvgStats stats = new AvgStats();
 
-            for (int i = 0; i < sampleCount; i++)
+            for (int i = 0; i < sampleCount;)
             {
                 callback((float)i / sampleCount);
 
@@ -135,14 +188,25 @@ public class TestDataGenerator : MonoBehaviour
                 randomNormalTemp.z = Mathf.Abs(randomNormalTemp.z);
                 randomNormalTemp = randomNormalTemp.x * normalCSRight + randomNormalTemp.y * normalCSUp + randomNormalTemp.z * randomSurfacePointNormal;
 
+                // always send rays in direction of normal to simplify everything
+                //randomNormalTemp = randomSurfacePointNormal;
+
                 Vector3 direction = -randomNormalTemp.normalized;
                 Vector3 origin = randomSurfacePoint - direction * 0.1f;
+                //Debug.Log($"({origin.x}f, {origin.y}f, {origin.z}f), ({direction.x}f, {direction.y}f, {direction.z}f)");
 
                 // generate random surface properties
                 float g = RandomRange(random, 0.1f, 0.95f);
                 float ior = RandomRange(random, 1.0f, 1.5f);
                 float sigmaS = RandomRange(random, 0.5f, 50.0f);
                 float sigmaT = RandomRange(random, sigmaS + 0.1f, 51.0f);
+
+                // test if fixing these values is better
+                sigmaS = 30;
+                sigmaT = 31;
+                g = 0.9f;
+                ior = 1.0f;
+
                 float sigmaA = sigmaT - sigmaS;
                 float sigmaSRed = (1 - g) * sigmaS;
                 float effectiveAlbedo = 0.0f;
@@ -160,9 +224,9 @@ public class TestDataGenerator : MonoBehaviour
                     standardDeviation = 2 * mad / sigmaTred;
                 }
 
-                effectiveAlbedoAvg += effectiveAlbedo;
-                gAvg += g;
-                iorAvg += ior;
+                stats.effectiveAlbedo += effectiveAlbedo;
+                stats.g += g;
+                stats.ior += ior;
 
                 // calculate coefficients for random point on surfice
                 float[] coefficients = TestDataGenerator.CalculateCoefficients(
@@ -177,78 +241,102 @@ public class TestDataGenerator : MonoBehaviour
                     randomVertexWeight,
                     largeCoefficientPenalty);
 
-
-                //origin = new Vector3(0, 0, -1);
-                //direction = new Vector3(0, 0, 1);
+                var normalToZ = new Frame(randomSurfacePointNormal);
+                var zToDirection = new Frame(-direction).Invert();
 
                 int absorbtionSum = 0;
-                int absorbtionTestCount = 128;
+                int absorbtionTestCount = samplesPerPoint;
 
-                Vector3? exitPointOpt = null;
+                var (dist, inside) = PolySurface.RayMarch(coefficients, origin, direction, 1000.0f, randomSurfacePoint);
+                var hit = origin + (dist + 0.001f) * direction;
+                samplesTemp.Clear();
                 for (int k = 0; k < absorbtionTestCount; k++)
                 {
-                    var p = SimulatePath(random, coefficients, origin, direction, randomSurfacePoint, g, sigmaSRed, sigmaA, distScale, null);
-                    if (exitPointOpt == null && p != null)
-                        exitPointOpt = p;
+                    int stepCount = 0;
+                    var p = SimulatePath(random, coefficients, hit, direction, randomSurfacePoint, g, sigmaSRed, sigmaT, distScale, null, ref stepCount);
+                    stats.steps += (double)stepCount;
 
                     if (p == null) absorbtionSum += 1;
+
+                    if (p != null)
+                        samplesTemp.Add(p.Value - randomSurfacePoint);
+
+
+                    callback(((float)i + (float)k / (float)absorbtionTestCount) / sampleCount);
                 }
 
                 float absorbtion = (float)absorbtionSum / (float)absorbtionTestCount;
 
-                // @todo: handle absorbed data
-                if (exitPointOpt != null)
+
+                // rotate from normal space to world space, so the normal aligns with the z-axis
+                RotatePolynomial(coefficients, normalToZ.x, normalToZ.y, normalToZ.z);
+                // rotate from world space to direction space, so the direction aligns with the z-axis
+                RotatePolynomial(coefficients, zToDirection.x, zToDirection.y, zToDirection.z);
+
+                var features = coefficients.Concat(new float[] { effectiveAlbedo, g, ior }).ToArray();
+
+                foreach (var _exitPoint in samplesTemp)
                 {
-                    posAvg += exitPointOpt.Value;
+                    var exitPoint = _exitPoint;
 
-                    // rotate polynomial so the incident direction aligns with the z-axis
-                    Vector3 right = GetPerpendicular(direction);
-                    Vector3 up = Vector3.Cross(right, direction);
-                    RotatePolynomial(coefficients, right, up, direction);
+                    stats.pos.x += exitPoint.x / (float)absorbtionTestCount;
+                    stats.pos.y += exitPoint.y / (float)absorbtionTestCount;
+                    stats.pos.z += exitPoint.z / (float)absorbtionTestCount;
 
-                    Vector4 Vec3To4(Vector3 v, float w) => new Vector4(v.x, v.y, v.z, w);
+                    //var p1 = PolySurface.EvaluateAt(coefficients, exitPoint, Vector3.zero);
+                    //var n1 = PolySurface.GetNormalAt(coefficients, exitPoint, Vector3.zero);
 
-                    // exit point should be in local space
-                    var rotMatrix = new Matrix4x4(Vec3To4(right, 0), Vec3To4(up, 0), Vec3To4(-direction, 0), new Vector4(0, 0, 0, 1));
-                    Vector3 exitPoint = rotMatrix * (exitPointOpt.Value - randomSurfacePoint);
+                    // rotate from normal space to world space, so the normal aligns with the z-axis
+                    //var worldToNormal1 = new Frame(randomSurfacePointNormal);
+                    //var normalToZ = new Frame(PolySurface.GetNormalAt(coefficients, Vector3.zero, Vector3.zero));
+                    exitPoint = normalToZ.ToMatrix().transpose * exitPoint;
+
+                    //var p2 = PolySurface.EvaluateAt(coefficients, exitPoint, Vector3.zero);
+                    //var n2 = PolySurface.GetNormalAt(coefficients, exitPoint, Vector3.zero);
+                    //var n1_ = normalToZ.ToMatrix().transpose * n1;
+
+                    // rotate from world space to direction space, so the direction aligns with the z-axis
+                    exitPoint = zToDirection.ToMatrix().transpose * exitPoint;
+
+                    //var p3 = PolySurface.EvaluateAt(coefficients, exitPoint, Vector3.zero);
+                    //var n3 = PolySurface.GetNormalAt(coefficients, exitPoint, Vector3.zero);
+                    //var n2_ = zToDirection.ToMatrix().transpose * n2;
+
                     samples.Add(new Sample
                     {
-                        features = coefficients.Concat(new float[] { effectiveAlbedo, g, ior }).ToArray(),
+                        features = features,
                         out_pos = new float[] { exitPoint.x, exitPoint.y, exitPoint.z },
                         absorbtion = absorbtion,
-                        //entryPoint      = new vec3(randomSurfacePoint.x, randomSurfacePoint.y, randomSurfacePoint.z),
-                        //exitPoint       = new vec3(exitPoint.x, exitPoint.y, exitPoint.z),
-                        //coefficients    = coefficients,
-                        //sigmaS          = sigmaS,
-                        //sigmaA          = sigmaA,
-                        //sigmaT          = sigmaT,
-                        //g               = g,
-                        //ior             = ior
+                        point = new vec3(randomSurfacePoint),
+                        normal = new vec3(randomSurfacePointNormal)
                     });
                 }
+                i++;
             }
             callback(1);
 
-            var jsonString = JsonConvert.SerializeObject(samples.ToArray(), Formatting.Indented);
-
             var now = DateTime.Now;
-            File.WriteAllText($"../train_data/samples_{now.Year}-{now.Month}-{now.Day}--{now.Hour}-{now.Minute}-{now.Second}.json", jsonString);
+            using (var file = File.OpenWrite($"../train_data/samples_{now.Year}-{now.Month}-{now.Day}--{now.Hour}-{now.Minute}-{now.Second}.json"))
+            {
+                JsonSerializer serializer = new JsonSerializer();
+                serializer.Formatting = Formatting.Indented;
+                var writer = new JsonTextWriter(new StreamWriter(new BufferedStream(file)));
+                serializer.Serialize(writer, samples);
+                writer.Flush();
+                file.Flush();
+            }
 
-
-            var avg = new AvgStats {
-                effectiveAlbedo = effectiveAlbedoAvg / sampleCount,
-                g = gAvg / sampleCount,
-                ior = iorAvg / sampleCount,
-                pos = new vec3(posAvg / sampleCount)
-            };
-            var avgJsonString = JsonConvert.SerializeObject(avg, Formatting.Indented);
+            stats.ComputeAvg(sampleCount);
+            var avgJsonString = JsonConvert.SerializeObject(stats, Formatting.Indented);
             File.WriteAllText($"../train_data/stats_{now.Year}-{now.Month}-{now.Day}--{now.Hour}-{now.Minute}-{now.Second}.json", avgJsonString);
+
 
             elapsedTime = stopwatch.Elapsed;
 
             //Debug.Log($"Generating {sampleCount} samples took {time}");
             trainThread = null;
-        });
+        }
+        );
 
         trainThread.Start();
     }
@@ -282,7 +370,7 @@ public class TestDataGenerator : MonoBehaviour
     }
 
 
-    private static void RotatePolynomial(float[] c, Vector3 right, Vector3 up, Vector3 forward)
+    public static void RotatePolynomial(float[] c, Vector3 right, Vector3 up, Vector3 forward)
     {
         float[] coefficientsTemp = new float[20];
         coefficientsTemp[0] = c[0];
@@ -317,14 +405,29 @@ public class TestDataGenerator : MonoBehaviour
         return 0.25f * g + 0.25f * a_red + a_eff;
     }
 
-    public static Vector3? SimulatePath(System.Random random, float[] coefficients, Vector3 origin, Vector3 direction, Vector3 center, float g, float sigmaSRed, float sigmaA, float distScale, Action<PathPoint> onInteraction) {
+    public static Vector3 GetRandomNewDirection(System.Random random, float g, Vector3 direction)
+    {
+        float alpha = Mathf.Acos(InvIntPhaseFunction((float)random.NextDouble(), g));
+        float beta = (float)random.NextDouble() * 2 * Mathf.PI;
+
+        Vector3 fx = direction;
+        Vector3 fy = GetPerpendicular(direction);
+        Vector3 fz = Vector3.Cross(fx, fy);
+        var f = new Matrix4x4(fx.ToVector4(), fy.ToVector4(), fz.ToVector4(), new Vector4(0, 0, 0, 1));
+        return f * new Vector3(Mathf.Cos(alpha), Mathf.Sin(alpha) * Mathf.Cos(beta), Mathf.Sin(alpha) * Mathf.Sin(beta));
+    }
+
+    public static Vector3? SimulatePath(System.Random random, float[] coefficients, Vector3 origin, Vector3 direction, Vector3 center, float g, float sigmaSRed, float sigmaA, float distScale, Action<PathPoint> onInteraction, ref int stepCount) {
         direction = direction.normalized;
 
         float maxDist = float.MaxValue;
+        maxDist = GetScatterDistance(random, sigmaSRed) * distScale;
 
         float throughput = 1.0f;
 
         for (int i = 0; i < 500; i++) {
+            stepCount += 1;
+
             var (dist, inside) = PolySurface.RayMarch(coefficients, origin, direction, maxDist, center);
             var newPoint = origin + direction * dist;
             var point = new PathPoint{
@@ -340,37 +443,39 @@ public class TestDataGenerator : MonoBehaviour
                 return newPoint;
             }
 
+
+            direction = GetRandomNewDirection(random, g, direction);
             // still inside, set random direction and maxDist
-            if (g == 0) {
-                direction = OnUnitSphere(random);
-            } else {
-                float rand = RandomRange(random, 0.0f, 1.0f);
-                float cosAngle = InvIntPhaseFunction(rand, g);
-                float theta = Mathf.Acos(cosAngle);
-                float d = 1 / Mathf.Tan(theta);
+            //if (g == 0) {
+            //    direction = OnUnitSphere(random);
+            //} else {
+            //    float rand = RandomRange(random, 0.0f, 1.0f);
+            //    float cosAngle = InvIntPhaseFunction(rand, g);
+            //    float theta = Mathf.Acos(cosAngle);
+            //    float d = 1 / Mathf.Tan(theta);
 
-                // Debug.Log($"rand: {rand}, cosAngle: {cosAngle}, theta: {theta}, d: {d}");
+            //    // Debug.Log($"rand: {rand}, cosAngle: {cosAngle}, theta: {theta}, d: {d}");
 
-                if (d == float.PositiveInfinity) {
-                    // do nothing
-                    //direction = direction;
-                } else if (d == float.NegativeInfinity) {
-                    direction = -direction;
-                } else {
-                    var right = GetPerpendicular(direction).normalized;
-                    var up = Vector3.Cross(right, direction).normalized;
-                    var uv = InsideUnitCircle(random);
+            //    if (d == float.PositiveInfinity) {
+            //        // do nothing
+            //        //direction = direction;
+            //    } else if (d == float.NegativeInfinity) {
+            //        direction = -direction;
+            //    } else {
+            //        var right = GetPerpendicular(direction).normalized;
+            //        var up = Vector3.Cross(right, direction).normalized;
+            //        var uv = InsideUnitCircle(random);
 
-                    point.uv = uv;
-                    point.right = right;
-                    point.up = up;
+            //        point.uv = uv;
+            //        point.right = right;
+            //        point.up = up;
 
-                    // Debug.Log($"right: {right}, up: {up}, uv: {uv}");
+            //        // Debug.Log($"right: {right}, up: {up}, uv: {uv}");
 
-                    direction = uv.x * right + uv.y * up + d * direction;
-                    direction = direction.normalized;
-                }
-            }
+            //        direction = uv.x * right + uv.y * up + d * direction;
+            //        direction = direction.normalized;
+            //    }
+            //}
 
             // Debug.Log($"direction: {direction}");
 
@@ -401,7 +506,9 @@ public class TestDataGenerator : MonoBehaviour
         return dist;
     }
 
-    private static float InvIntPhaseFunction(float x, float g) {
+    public static float InvIntPhaseFunction(float x, float g) {
+        if (g == 0)
+            return x * 2 - 1;
         float g2 = g * g;
 
         float tmp = (1 - g2) / (1 + g * (2 * x - 1));
@@ -458,37 +565,45 @@ public class TestDataGenerator : MonoBehaviour
             }
         }
 
-        // Debug.Log($"Generated {vertices.Count} points");
+        Debug.Log($"Generated {vertices.Count}/{pointCount} points");
         return vertices.ToArray();
     }
 
     public static float[] CalculateCoefficients(System.Random random, Vertex[] vertices, Vector3 center, float standardDeviation, float weightFactor, float weightScale, int maxVertexCount, int randomVertexCount, float randomVertexWeight, float largeCoefficientPenalty) {
-        float sigmaNInv = 1.0f / standardDeviation;
+        //float sigmaNInv = 1.0f / standardDeviation;
+        float sigmaNInv = 1.0f;
 
-        float maxDist = Mathf.Pow(-2 * Mathf.Log(0.01f) / weightScale, 2);
+        float maxDist = Mathf.Pow(-2 * Mathf.Log(0.01f) / weightScale, 2) * 2;
         vertices = vertices
-            .Where(v => (v.position - center).sqrMagnitude <= maxDist)
+            //.Where(v => (v.position - center).sqrMagnitude <= maxDist)
             .OrderBy(v => (v.position - center).sqrMagnitude)
             .Take(Mathf.Min(vertices.Length, maxVertexCount))
             .Concat(Enumerable.Repeat(0, randomVertexCount).Select(_ => vertices[random.Next() % vertices.Length].withWeight(randomVertexWeight)))
             .Select(v => new Vertex((v.position - center) * sigmaNInv, v.normal, v.weight))
             .ToArray();
 
+        //float m_inv = 1.0f / (float)vertices.Length;
+        float m_inv = 1.0f;
+
         var X = DenseMatrix.OfRows(vertices.Length, 20, vertices.Select(v => Pc(v, weightFactor, weightScale)));
-        var tmp = 2 * X.Transpose() * X + Sum(20, 20, vertices, v => weight(v, weightFactor, weightScale) * Y(v.position)) + 2 * largeCoefficientPenalty;
-        var c = tmp.Inverse() * Sum(20, 1, vertices, v => weight(v, weightFactor, weightScale) * Z(v.position, v.normal));
+        var tmp = m_inv * 2 * X.Transpose() * X
+            + m_inv * Sum(20, 20, vertices, v => weight(v, weightFactor, weightScale) * Y(v.position))
+            + m_inv * 2 * largeCoefficientPenalty;
+
+        var c = tmp.Inverse()
+            * m_inv * Sum(20, 1, vertices, v => weight(v, weightFactor, weightScale) * Z(v.position, v.normal));
 
         var coefficients = c.Column(0).ToArray();
         coefficients[0] = 0;
         return coefficients;
     }
 
-    private static Vector3 GetPerpendicular(Vector3 p) {
+    public static Vector3 GetPerpendicular(Vector3 p) {
         var t = new Vector3(p.z, p.z, -p.x - p.y);
         if (t.sqrMagnitude < 0.01f) {
-            return new Vector3(-p.y - p.z, p.x, p.x);
+            return new Vector3(-p.y - p.z, p.x, p.x).normalized;
         } else {
-            return t;
+            return t.normalized;
         }
     }
 

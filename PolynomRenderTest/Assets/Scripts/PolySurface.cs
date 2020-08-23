@@ -18,36 +18,25 @@ public class PolySurface : MonoBehaviour
 
     // surface/medium properties
 
-    [SerializeField]
     [Range(-1.0f, 1.0f)]
     public float g = 0.9f;
-    [SerializeField]
     [Min(0.0f)]
     public float ior = 1.0f;
 
-    [SerializeField]
     [Min(0.0f)]
     public float sigmaS = 0.5f;
-    [SerializeField]
     [Min(0.0f)]
     public float sigmaA = 0.5f;
-    [SerializeField]
     [Min(0.0f)]
     public float sigmaT = 0.5f;
 
-    [SerializeField]
-    private float sigmaSred = 0.0f;
+    public float sigmaSred = 0.0f;
     public float SigmaSReduced => sigmaSred;
-    [SerializeField]
-    private float sigmaTred = 0.0f;
-    [SerializeField]
-    private float alphaRed = 0.0f;
-    [SerializeField]
-    private float alphaEff = 0.0f;
-    [SerializeField]
-    private float mad = 0.0f;
-    [SerializeField]
-    private float standardDeviation = 0.0f;
+    public float sigmaTred = 0.0f;
+    public float alphaRed = 0.0f;
+    public float alphaEff = 0.0f;
+    public float mad = 0.0f;
+    public float standardDeviation = 0.0f;
     public float StandardDeviation => standardDeviation;
 
 
@@ -55,6 +44,8 @@ public class PolySurface : MonoBehaviour
 
     [SerializeField]
     private new Camera camera;
+
+    public Renderer renderer;
 
     [SerializeField]
     private Material material;

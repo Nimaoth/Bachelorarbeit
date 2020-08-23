@@ -11,13 +11,13 @@
     SubShader 
     {
         Tags {
-            "RenderType" = "Transparent"
-            "Queue" = "Transparent+2"
+            "RenderType" = "Opaque"
+            "Queue" = "Geometry"
         }
 
         Pass 
         {
-            ZTest Always
+            //ZTest Always
             // Blend One One
             Blend SrcAlpha OneMinusSrcAlpha
 

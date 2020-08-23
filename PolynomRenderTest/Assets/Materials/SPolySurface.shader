@@ -2,10 +2,12 @@
 {
     Properties
     {
-        _StepSize ("Step Size", Range(0.01, 0.5)) = 0.1
+        _StepSize ("Step Size", Range(0.001, 0.5)) = 0.1
         _Color ("Color", Color) = (1, 1, 1)
         _BackfaceColor ("Backface Color", Color) = (0.8, 0.2, 0.2)
         _Bounds ("Bounds", Range(1, 100)) = 50
+        _MaxDistToCenter ("Max Dist To Center", Range(0, 1)) = 0.1
+        _ShowBackface ("Show backface", Range(0, 1)) = 1
     }
     SubShader
     {
@@ -27,7 +29,7 @@
             #include "UnityLightingCommon.cginc"
 
             #define MAX_DIST 500
-            #define MAX_STEPS 500
+            #define MAX_STEPS 1000
             #define STEP_SIZE 0.1
             #define SURF_DIST 0.0001
 
@@ -67,6 +69,8 @@
             float _Bounds;
             float3 center;
             float coefficients[20];
+            float _MaxDistToCenter;
+            float _ShowBackface;
 
             v2f vert(appdata v)
             {
@@ -182,14 +186,35 @@
                     float3 p = ro + rd * t.x;
                     dist = GetDist(p);
 
-                    if (prev_dist < 0 && dist >= 0) {
-                        t_prev.y = t.x - stepSize;
-                        t.y = t.x;
-                        t.y = BinarySearch(ro, rd, t_prev.y, t.y);
+                    // inside -> outside
+                    if (prev_dist < 0 && dist >= 0 && _ShowBackface > 0.5) {
+                        //t_prev.y = t.x - stepSize;
+                        //t.y = t.x;
+                        //t.y = BinarySearch(ro, rd, t_prev.y, t.y);
+
+                        float t_exact = BinarySearch(ro, rd, t_prev.x, t.x);
+                        if (length(ro + rd * t_exact - center) < _MaxDistToCenter) {
+                            t.x = t_exact;
+                            t.y = -1;
+                            return t;
+                        }
                     }
 
-                    if (prev_dist > 0 && dist <= 0)
-                        break;
+                    // outside -> inside
+                    if (prev_dist > 0 && dist <= 0) {
+                        //t_prev.y = t.x - stepSize;
+                        //t.y = t.x;
+                        //t.y = BinarySearch(ro, rd, t_prev.y, t.y);
+                        float t_exact = BinarySearch(ro, rd, t_prev.x, t.x);
+                        if (length(ro + rd * t_exact - center) < _MaxDistToCenter) {
+                            t.x = t_exact;
+                            t.y = 11;
+                            return t;
+                        }
+                    }
+
+                    //if (prev_dist > 0 && dist <= 0)
+                    //    break;
 
                     prev_dist = dist;
                     t_prev.x = t.x;
@@ -203,6 +228,7 @@
                 }
 
                 t.x = BinarySearch(ro, rd, t_prev.x, t.x);
+                t.x = MAX_DIST;
 
                 return t;
             }
@@ -229,6 +255,8 @@
                 // return (normal * 0.5 + 0.5) * color.rgb * light;
                 // return normal * color.rgb * light;
 
+                //return normal;
+
                 float f = max(0.1, abs(dot(normal, -cameraDir)));
                 return color.rgb * f;
             }
@@ -243,25 +271,46 @@
                 float3 rayDir = GetRayDir(uv);
 
                 float2 dist = RayMarch(rayOrigin, rayDir);
-                if (dist.x >= MAX_DIST && dist.y <= 0) {
-                    discard;
-                } else if (dist.x < MAX_DIST && dist.y > 0) {
-                    float3 col1 = GetColor(cameraPos + rayDir * dist.x, _Color.rgb);
-                    float3 col2 = GetColor(cameraPos + rayDir * dist.y, _BackfaceColor.rgb);
-                    float3 col = (1 - _BackfaceColor.a) * col1 + _BackfaceColor.a * col2;
-                    output.color = float4(col, _Color.a);
-                    output.depth = (1.0 / dist.y - _ZBufferParams.w) / _ZBufferParams.z;
-                } else if (dist.x < MAX_DIST) {
-                    float3 col = GetColor(cameraPos + rayDir * dist.x, _Color.rgb);
-                    output.color = float4(col, _Color.a);
-                    output.depth = (1.0 / dist.x - _ZBufferParams.w) / _ZBufferParams.z;
-                } else if (dist.y > 0) {
-                    float3 col = GetColor(cameraPos + rayDir * dist.y, _BackfaceColor.rgb) * _BackfaceColor.a;
-                    output.color = float4(col, _Color.a);
-                    output.depth = (1.0 / dist.y - _ZBufferParams.w) / _ZBufferParams.z;
-                } else {
+
+                float3 hitPoint = rayOrigin + rayDir * dist.x;
+                if (dist.x >= MAX_DIST) {
                     discard;
                 }
+                else
+                {
+                    float3 col = 0;
+                    if (dist.y > 0) {
+                        col = _Color.rgb;
+                    }
+                    else {
+                        col = _BackfaceColor.rgb;
+                    }
+
+                    col = GetColor(rayOrigin + rayDir * dist.x, col);
+                    output.color = float4(col, _Color.a);
+                    output.depth = (1.0 / dist.x - _ZBufferParams.w) / _ZBufferParams.z;
+                    return output;
+                }
+
+                //if (dist.x >= MAX_DIST && dist.y <= 0) {
+                //    discard;
+                //} else if (dist.x < MAX_DIST && dist.y > 0) {
+                //    float3 col1 = GetColor(cameraPos + rayDir * dist.x, _Color.rgb);
+                //    float3 col2 = GetColor(cameraPos + rayDir * dist.y, _BackfaceColor.rgb);
+                //    float3 col = (1 - _BackfaceColor.a) * col1 + _BackfaceColor.a * col2;
+                //    output.color = float4(col, _Color.a);
+                //    output.depth = (1.0 / dist.y - _ZBufferParams.w) / _ZBufferParams.z;
+                //} else if (dist.x < MAX_DIST) {
+                //    float3 col = GetColor(cameraPos + rayDir * dist.x, _Color.rgb);
+                //    output.color = float4(col, _Color.a);
+                //    output.depth = (1.0 / dist.x - _ZBufferParams.w) / _ZBufferParams.z;
+                //} else if (dist.y > 0) {
+                //    float3 col = GetColor(cameraPos + rayDir * dist.y, _BackfaceColor.rgb) * _BackfaceColor.a;
+                //    output.color = float4(col, _Color.a);
+                //    output.depth = (1.0 / dist.y - _ZBufferParams.w) / _ZBufferParams.z;
+                //} else {
+                //    discard;
+                //}
 
                 return output;
             }
